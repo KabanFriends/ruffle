@@ -1,5 +1,5 @@
 use crate::avm1::globals::create_globals;
-use crate::avm1::object::{search_prototype, stage_object};
+use crate::avm1::object::stage_object;
 use crate::context::UpdateContext;
 use crate::prelude::*;
 use gc_arena::{Collect, GcCell, MutationContext};
@@ -40,6 +40,7 @@ pub use crate::avm1::error::Error;
 use crate::avm1::globals::as_broadcaster;
 use crate::avm1::globals::as_broadcaster::BroadcasterFunctions;
 pub use globals::SystemPrototypes;
+pub use object::array_object::ArrayObject;
 pub use object::script_object::ScriptObject;
 pub use object::sound_object::SoundObject;
 pub use object::stage_object::StageObject;
@@ -93,7 +94,7 @@ pub struct Avm1<'gc> {
     /// The global object.
     globals: Object<'gc>,
 
-    /// System builtins that we use internally to construct new objects.
+    /// System built-ins that we use internally to construct new objects.
     prototypes: globals::SystemPrototypes<'gc>,
 
     /// Cached functions for the AsBroadcaster
@@ -330,11 +331,7 @@ impl<'gc> Avm1<'gc> {
             active_clip,
         );
 
-        if let Ok((callback, base_proto)) =
-            search_prototype(Value::Object(obj), name, &mut activation, obj)
-        {
-            let _ = callback.call(name, &mut activation, obj, base_proto, args);
-        }
+        let _ = obj.call_method(name, args, &mut activation);
     }
 
     pub fn notify_system_listeners(
@@ -510,17 +507,23 @@ impl<'gc> Avm1<'gc> {
 }
 
 pub fn root_error_handler<'gc>(activation: &mut Activation<'_, 'gc, '_>, error: Error<'gc>) {
-    if let Error::ThrownValue(error) = &error {
-        let message = error
-            .coerce_to_string(activation)
-            .unwrap_or_else(|_| "undefined".into());
-        activation.context.log.avm_trace(&message);
-    } else {
-        log::error!("{}", error);
+    match &error {
+        Error::ThrownValue(value) => {
+            let message = value
+                .coerce_to_string(activation)
+                .unwrap_or_else(|_| "undefined".into());
+            activation.context.log.avm_trace(&message);
+            // Continue execution without halting.
+            return;
+        }
+        Error::InvalidSwf(swf_error) => {
+            log::error!("{}: {}", error, swf_error);
+        }
+        _ => {
+            log::error!("{}", error);
+        }
     }
-    if error.is_halting() {
-        activation.context.avm1.halt();
-    }
+    activation.context.avm1.halt();
 }
 
 /// Utility function used by `Avm1::action_wait_for_frame` and
@@ -533,7 +536,7 @@ fn skip_actions(reader: &mut Reader<'_>, num_actions_to_skip: u8) {
     }
 }
 
-/// Starts draggining this display object, making it follow the cursor.
+/// Starts dragging this display object, making it follow the cursor.
 /// Runs via the `startDrag` method or `StartDrag` AVM1 action.
 pub fn start_drag<'gc>(
     display_object: DisplayObject<'gc>,
@@ -622,6 +625,7 @@ pub struct DisplayObjectIter<'gc> {
 
 impl<'gc> Iterator for DisplayObjectIter<'gc> {
     type Item = DisplayObject<'gc>;
+
     fn next(&mut self) -> Option<Self::Item> {
         let clip = self.clip;
         self.clip = clip.and_then(|clip| clip.next_avm1_clip());

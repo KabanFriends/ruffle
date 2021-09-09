@@ -4,7 +4,7 @@ use crate::avm1::globals::system::SystemProperties;
 use crate::avm1::object::Object;
 use crate::avm1::property::Attribute;
 use crate::avm1::{Avm1, AvmString, ScriptObject, TObject, Timers, Value};
-use crate::avm2::{Avm2, Domain as Avm2Domain};
+use crate::avm2::{Activation as Avm2Activation, Avm2, Domain as Avm2Domain};
 use crate::backend::{
     audio::{AudioBackend, AudioManager},
     locale::LocaleBackend,
@@ -18,7 +18,9 @@ use crate::backend::{
 use crate::config::Letterbox;
 use crate::context::{ActionQueue, ActionType, RenderContext, UpdateContext};
 use crate::context_menu::{ContextMenuCallback, ContextMenuItem, ContextMenuState};
-use crate::display_object::{EditText, MorphShape, MovieClip, Stage};
+use crate::display_object::{
+    EditText, MorphShape, MovieClip, Stage, StageAlign, StageQuality, StageScaleMode,
+};
 use crate::events::{ButtonKeyCode, ClipEvent, ClipEventResult, KeyCode, PlayerEvent};
 use crate::external::Value as ExternalValue;
 use crate::external::{ExternalInterface, ExternalInterfaceProvider};
@@ -35,6 +37,7 @@ use log::info;
 use rand::{rngs::SmallRng, SeedableRng};
 use std::collections::{HashMap, VecDeque};
 use std::ops::DerefMut;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -389,13 +392,21 @@ impl Player {
                 context.swf.width().to_pixels() as u32,
                 context.swf.height().to_pixels() as u32,
             );
-            let domain = Avm2Domain::movie_domain(context.gc_context, context.avm2.global_domain());
+
+            let mut activation = Avm2Activation::from_nothing(context.reborrow());
+            let global_domain = activation.avm2().global_domain();
+            let domain = Avm2Domain::movie_domain(&mut activation, global_domain);
+
+            drop(activation);
+
+            context
+                .library
+                .library_for_movie_mut(context.swf.clone())
+                .set_avm2_domain(domain);
+            context.ui.set_mouse_visible(true);
+
             let root: DisplayObject =
                 MovieClip::from_movie(context.gc_context, context.swf.clone()).into();
-
-            let library = context.library.library_for_movie_mut(context.swf.clone());
-
-            library.set_avm2_domain(domain);
 
             root.set_depth(context.gc_context, 0);
             let flashvars = if !context.swf.parameters().is_empty() {
@@ -575,7 +586,7 @@ impl Player {
                 ActivationIdentifier::root("[ContextMenu]"),
             );
 
-            // TODO: this should use a pointed display object with `.menu`
+            // TODO: This should use a pointed display object with `.menu`
             let menu_object = {
                 let dobj = activation.context.stage.root_clip();
                 if let Value::Object(obj) = dobj.object() {
@@ -656,7 +667,7 @@ impl Player {
         // currently doesn't allow `this` to be a Value (#843).
         let undefined = Value::Undefined.coerce_to_object(&mut activation);
 
-        // TODO: remember to also change the first arg
+        // TODO: Remember to also change the first arg
         // when we support contextmenu on non-root-movie
         let params = vec![root_clip.object(), Value::Object(item)];
 
@@ -754,6 +765,40 @@ impl Player {
         self.mutate_with_update_context(|context| {
             let stage = context.stage;
             stage.set_viewport_size(context, width, height, scale_factor);
+        })
+    }
+
+    pub fn set_show_menu(&mut self, show_menu: bool) {
+        self.mutate_with_update_context(|context| {
+            let stage = context.stage;
+            stage.set_show_menu(context, show_menu);
+        })
+    }
+
+    pub fn set_stage_align(&mut self, stage_align: &str) {
+        self.mutate_with_update_context(|context| {
+            let stage = context.stage;
+            if let Ok(stage_align) = StageAlign::from_str(stage_align) {
+                stage.set_align(context, stage_align);
+            }
+        })
+    }
+
+    pub fn set_quality(&mut self, quality: &str) {
+        self.mutate_with_update_context(|context| {
+            let stage = context.stage;
+            if let Ok(quality) = StageQuality::from_str(quality) {
+                stage.set_quality(context.gc_context, quality);
+            }
+        })
+    }
+
+    pub fn set_scale_mode(&mut self, scale_mode: &str) {
+        self.mutate_with_update_context(|context| {
+            let stage = context.stage;
+            if let Ok(scale_mode) = StageScaleMode::from_str(scale_mode) {
+                stage.set_scale_mode(context, scale_mode);
+            }
         })
     }
 
@@ -1275,7 +1320,7 @@ impl Player {
             }
 
             match actions.action_type {
-                // DoAction/clip event code
+                // DoAction/clip event code.
                 ActionType::Normal { bytecode } | ActionType::Initialize { bytecode } => {
                     Avm1::run_stack_frame_for_action(
                         actions.clip,
@@ -1285,7 +1330,7 @@ impl Player {
                         context,
                     );
                 }
-                // Change the prototype of a movieclip & run constructor events
+                // Change the prototype of a MovieClip and run constructor events.
                 ActionType::Construct {
                     constructor: Some(constructor),
                     events,
@@ -1302,7 +1347,12 @@ impl Player {
                     );
                     if let Ok(prototype) = constructor.get("prototype", &mut activation) {
                         if let Value::Object(object) = actions.clip.object() {
-                            object.set_proto(activation.context.gc_context, prototype);
+                            object.define_value(
+                                activation.context.gc_context,
+                                "__proto__",
+                                prototype,
+                                Attribute::empty(),
+                            );
                             for event in events {
                                 let _ = activation.run_child_frame_for_action(
                                     "[Actions]",
@@ -1316,7 +1366,7 @@ impl Player {
                         }
                     }
                 }
-                // Run constructor events without changing the prototype
+                // Run constructor events without changing the prototype.
                 ActionType::Construct {
                     constructor: None,
                     events,
@@ -1331,7 +1381,7 @@ impl Player {
                         );
                     }
                 }
-                // Event handler method call (e.g. onEnterFrame)
+                // Event handler method call (e.g. onEnterFrame).
                 ActionType::Method { object, name, args } => {
                     Avm1::run_stack_frame_for_method(
                         actions.clip,
@@ -1343,7 +1393,7 @@ impl Player {
                     );
                 }
 
-                // Event handler method call (e.g. onEnterFrame)
+                // Event handler method call (e.g. onEnterFrame).
                 ActionType::NotifyListeners {
                     listener,
                     method,
@@ -1369,6 +1419,12 @@ impl Player {
                     if let Err(e) =
                         Avm2::run_stack_frame_for_callable(callable, reciever, &args[..], context)
                     {
+                        log::error!("Unhandled AVM2 exception in event handler: {}", e);
+                    }
+                }
+
+                ActionType::Event2 { event, target } => {
+                    if let Err(e) = Avm2::dispatch_event(context, event, target) {
                         log::error!("Unhandled AVM2 exception in event handler: {}", e);
                     }
                 }

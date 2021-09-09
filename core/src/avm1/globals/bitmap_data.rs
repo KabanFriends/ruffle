@@ -1,11 +1,12 @@
 //! flash.display.BitmapData object
 
+use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
 use crate::avm1::function::{Executable, FunctionObject};
-use crate::avm1::object::bitmap_data::{BitmapDataObject, ChannelOptions, Color};
+use crate::avm1::object::bitmap_data::BitmapDataObject;
 use crate::avm1::property_decl::{define_properties_on, Declaration};
-use crate::avm1::{activation::Activation, object::bitmap_data::BitmapData};
 use crate::avm1::{Object, TObject, Value};
+use crate::bitmap::bitmap_data::{BitmapData, ChannelOptions, Color};
 use crate::character::Character;
 use crate::display_object::TDisplayObject;
 use gc_arena::{GcCell, MutationContext};
@@ -80,24 +81,18 @@ pub fn constructor<'gc>(
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let width = args
-        .get(0)
-        .unwrap_or(&Value::Number(0.0))
-        .coerce_to_i32(activation)? as u32;
+    let width = args.get(0).unwrap_or(&0.into()).coerce_to_i32(activation)? as u32;
 
-    let height = args
-        .get(1)
-        .unwrap_or(&Value::Number(0.0))
-        .coerce_to_i32(activation)? as u32;
+    let height = args.get(1).unwrap_or(&0.into()).coerce_to_i32(activation)? as u32;
 
     let transparency = args
         .get(2)
-        .unwrap_or(&Value::Bool(true))
+        .unwrap_or(&true.into())
         .as_bool(activation.swf_version());
 
     let fill_color = args
         .get(3)
-        .unwrap_or(&Value::Number(4294967295f64)) // 0xFFFFFFFF
+        .unwrap_or(&(-1).into())
         .coerce_to_i32(activation)?;
 
     if !is_size_valid(activation.swf_version(), width, height) {
@@ -482,24 +477,22 @@ pub fn noise<'gc>(
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let low = args
-        .get(1)
-        .unwrap_or(&Value::Number(0.0))
-        .coerce_to_u32(activation)? as u8;
+    let low = args.get(1).unwrap_or(&0.into()).coerce_to_u32(activation)? as u8;
 
     let high = args
         .get(2)
-        .unwrap_or(&Value::Number(255.0))
+        .unwrap_or(&0xFF.into())
         .coerce_to_u32(activation)? as u8;
 
-    let channel_options = args
-        .get(3)
-        .unwrap_or(&Value::Number(ChannelOptions::rgb().0 as f64))
-        .coerce_to_u32(activation)?;
+    let channel_options = if let Some(c) = args.get(3) {
+        ChannelOptions::from_bits_truncate(c.coerce_to_u32(activation)? as u8)
+    } else {
+        ChannelOptions::RGB
+    };
 
     let gray_scale = args
         .get(4)
-        .unwrap_or(&Value::Bool(false))
+        .unwrap_or(&false.into())
         .as_bool(activation.swf_version());
 
     if let Some(bitmap_data) = this.as_bitmap_data_object() {
@@ -509,13 +502,7 @@ pub fn noise<'gc>(
                 bitmap_data
                     .bitmap_data()
                     .write(activation.context.gc_context)
-                    .noise(
-                        random_seed,
-                        low,
-                        high.max(low),
-                        channel_options.into(),
-                        gray_scale,
-                    )
+                    .noise(random_seed, low, high.max(low), channel_options, gray_scale)
             }
 
             return Ok(Value::Undefined);
@@ -596,10 +583,11 @@ pub fn color_transform<'gc>(
             let end_y = (y + height) as u32;
 
             if let Some(color_transform) = color_transform.as_color_transform_object() {
+                let params = color_transform.get_params();
                 bitmap_data
                     .bitmap_data()
                     .write(activation.context.gc_context)
-                    .color_transform(min_x, min_y, end_x, end_y, color_transform);
+                    .color_transform(min_x, min_y, end_x, end_y, &params);
             }
 
             return Ok(Value::Undefined);
@@ -618,7 +606,7 @@ pub fn get_color_bounds_rect<'gc>(
         if !bitmap_data.disposed() {
             let find_color = args
                 .get(2)
-                .unwrap_or(&Value::Bool(true))
+                .unwrap_or(&true.into())
                 .as_bool(activation.swf_version());
 
             if let (Some(mask_val), Some(color_val)) = (args.get(0), args.get(1)) {
@@ -672,10 +660,11 @@ pub fn perlin_noise<'gc>(
                 .get(5)
                 .unwrap_or(&Value::Undefined)
                 .as_bool(activation.swf_version());
-            let channel_options = args
-                .get(6)
-                .unwrap_or(&Value::Number((1 | 2 | 4) as f64))
-                .coerce_to_u16(activation)? as u8;
+            let channel_options = if let Some(c) = args.get(6) {
+                ChannelOptions::from_bits_truncate(c.coerce_to_i16(activation)? as u8)
+            } else {
+                ChannelOptions::RGB
+            };
             let grayscale = args
                 .get(7)
                 .unwrap_or(&Value::Undefined)

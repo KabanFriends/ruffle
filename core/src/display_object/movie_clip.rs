@@ -12,6 +12,7 @@ use crate::backend::ui::MouseCursor;
 use bitflags::bitflags;
 
 use crate::avm1::activation::{Activation as Avm1Activation, ActivationIdentifier};
+use crate::binary_data::BinaryData;
 use crate::character::Character;
 use crate::context::{ActionType, RenderContext, UpdateContext};
 use crate::display_object::container::{
@@ -77,7 +78,7 @@ pub struct MovieClipData<'gc> {
     clip_event_flags: ClipEventFlag,
     frame_scripts: Vec<Avm2FrameScript<'gc>>,
     flags: MovieClipFlags,
-    avm2_constructor: Option<Avm2Object<'gc>>,
+    avm2_class: Option<Avm2Object<'gc>>,
     drawing: Drawing,
     is_focusable: bool,
     has_focus: bool,
@@ -105,7 +106,7 @@ impl<'gc> MovieClip<'gc> {
                 clip_event_flags: ClipEventFlag::empty(),
                 frame_scripts: Vec::new(),
                 flags: MovieClipFlags::empty(),
-                avm2_constructor: None,
+                avm2_class: None,
                 drawing: Drawing::new(),
                 is_focusable: false,
                 has_focus: false,
@@ -138,7 +139,7 @@ impl<'gc> MovieClip<'gc> {
                 clip_event_flags: ClipEventFlag::empty(),
                 frame_scripts: Vec::new(),
                 flags: MovieClipFlags::empty(),
-                avm2_constructor: Some(constr),
+                avm2_class: Some(constr),
                 drawing: Drawing::new(),
                 is_focusable: false,
                 has_focus: false,
@@ -174,7 +175,7 @@ impl<'gc> MovieClip<'gc> {
                 clip_event_flags: ClipEventFlag::empty(),
                 frame_scripts: Vec::new(),
                 flags: MovieClipFlags::PLAYING,
-                avm2_constructor: None,
+                avm2_class: None,
                 drawing: Drawing::new(),
                 is_focusable: false,
                 has_focus: false,
@@ -207,7 +208,7 @@ impl<'gc> MovieClip<'gc> {
                 clip_event_flags: ClipEventFlag::empty(),
                 frame_scripts: Vec::new(),
                 flags: MovieClipFlags::PLAYING,
-                avm2_constructor: None,
+                avm2_class: None,
                 drawing: Drawing::new(),
                 is_focusable: false,
                 has_focus: false,
@@ -465,6 +466,10 @@ impl<'gc> MovieClip<'gc> {
                     tag_len,
                 )
             }
+            TagCode::DefineBinaryData => self
+                .0
+                .write(context.gc_context)
+                .define_binary_data(context, reader),
             _ => Ok(()),
         };
         let _ = tag_utils::decode_tags(&mut reader, tag_callback, TagCode::End);
@@ -574,50 +579,58 @@ impl<'gc> MovieClip<'gc> {
             let id = reader.read_u16()?;
             let class_name = reader.read_str()?.to_string_lossy(reader.encoding());
 
-            if let Some(name) =
-                Avm2QName::from_symbol_class(&class_name, activation.context.gc_context)
-            {
-                let library = activation
-                    .context
-                    .library
-                    .library_for_movie_mut(movie.clone());
-                let domain = library.avm2_domain();
-                let constr = domain
-                    .get_defined_value(&mut activation, name.clone())
-                    .and_then(|v| v.coerce_to_object(&mut activation));
+            let name = Avm2QName::from_qualified_name(&class_name, activation.context.gc_context);
+            let library = activation
+                .context
+                .library
+                .library_for_movie_mut(movie.clone());
+            let domain = library.avm2_domain();
+            let class_object = domain
+                .get_defined_value(&mut activation, name.clone())
+                .and_then(|v| v.coerce_to_object(&mut activation));
 
-                match constr {
-                    Ok(constr) => {
-                        activation
-                            .context
-                            .library
-                            .avm2_constructor_registry_mut()
-                            .set_constr_symbol(constr, movie.clone(), id);
+            match class_object {
+                Ok(class_object) => {
+                    activation
+                        .context
+                        .library
+                        .avm2_class_registry_mut()
+                        .set_class_symbol(class_object, movie.clone(), id);
 
-                        let library = activation
-                            .context
-                            .library
-                            .library_for_movie_mut(movie.clone());
+                    let library = activation
+                        .context
+                        .library
+                        .library_for_movie_mut(movie.clone());
 
-                        if id == 0 {
-                            //TODO: This assumes only the root movie has `SymbolClass` tags.
-                            self.set_avm2_constructor(activation.context.gc_context, Some(constr));
-                        } else if let Some(Character::MovieClip(mc)) = library.character_by_id(id) {
-                            mc.set_avm2_constructor(activation.context.gc_context, Some(constr));
-                        } else {
-                            log::warn!(
-                                "Symbol class {} cannot be assigned to invalid character id {}",
-                                class_name,
-                                id
-                            );
+                    if id == 0 {
+                        //TODO: This assumes only the root movie has `SymbolClass` tags.
+                        self.set_avm2_class(activation.context.gc_context, Some(class_object));
+                    } else {
+                        match library.character_by_id(id) {
+                            Some(Character::MovieClip(mc)) => {
+                                mc.set_avm2_class(activation.context.gc_context, Some(class_object))
+                            }
+                            Some(Character::Avm2Button(btn)) => {
+                                btn.set_avm2_class(activation.context.gc_context, class_object)
+                            }
+                            Some(Character::BinaryData(_)) => {}
+                            Some(Character::Font(_)) => {}
+                            Some(Character::Sound(_)) => {}
+                            _ => {
+                                log::warn!(
+                                    "Symbol class {} cannot be assigned to invalid character id {}",
+                                    class_name,
+                                    id
+                                );
+                            }
                         }
                     }
-                    Err(e) => log::warn!(
-                        "Got AVM2 error {} when attempting to assign symbol class {}",
-                        e,
-                        class_name
-                    ),
                 }
+                Err(e) => log::warn!(
+                    "Got AVM2 error {} when attempting to assign symbol class {}",
+                    e,
+                    class_name
+                ),
             }
         }
 
@@ -717,7 +730,7 @@ impl<'gc> MovieClip<'gc> {
     pub fn goto_frame(
         self,
         context: &mut UpdateContext<'_, 'gc, '_>,
-        mut frame: FrameNumber,
+        frame: FrameNumber,
         stop: bool,
     ) {
         // Stop first, in case we need to kill and restart the stream sound.
@@ -728,9 +741,7 @@ impl<'gc> MovieClip<'gc> {
         }
 
         // Clamp frame number in bounds.
-        if frame < 1 {
-            frame = 1;
-        }
+        let frame = frame.max(1);
 
         if frame != self.current_frame() {
             self.run_goto(context, frame, false);
@@ -829,26 +840,15 @@ impl<'gc> MovieClip<'gc> {
     ///
     /// Scenes will be sorted in playback order.
     pub fn scenes(self) -> Vec<Scene> {
-        let read = self.0.read();
-        let mut out = Vec::new();
-
-        for (_, scene) in read.static_data.scene_labels.iter() {
-            out.push(scene.clone());
-        }
-
-        out.sort_unstable_by(
-            |Scene {
-                 name: _,
-                 start: a,
-                 length: _,
-             },
-             Scene {
-                 name: _,
-                 start: b,
-                 length: _,
-             }| a.cmp(b),
-        );
-
+        let mut out: Vec<_> = self
+            .0
+            .read()
+            .static_data
+            .scene_labels
+            .values()
+            .cloned()
+            .collect();
+        out.sort_unstable_by(|Scene { start: a, .. }, Scene { start: b, .. }| a.cmp(b));
         out
     }
 
@@ -917,13 +917,13 @@ impl<'gc> MovieClip<'gc> {
         self.0.read().static_data.total_frames
     }
 
-    pub fn set_avm2_constructor(
+    pub fn set_avm2_class(
         self,
         gc_context: MutationContext<'gc, '_>,
         constr: Option<Avm2Object<'gc>>,
     ) {
         let mut write = self.0.write(gc_context);
-        write.avm2_constructor = constr;
+        write.avm2_class = constr;
     }
 
     pub fn frame_label_to_number(self, frame_label: &str) -> Option<FrameNumber> {
@@ -975,14 +975,14 @@ impl<'gc> MovieClip<'gc> {
         }
     }
 
-    /// Gets the clip events for this movieclip.
+    /// Gets the clip events for this MovieClip.
     pub fn clip_actions(&self) -> Ref<[ClipEventHandler]> {
         Ref::map(self.0.read(), |mc| mc.clip_event_handlers())
     }
 
-    /// Sets the clip actions (a.k.a. clip events) for this movieclip.
+    /// Sets the clip actions (a.k.a. clip events) for this MovieClip.
     /// Clip actions are created in the Flash IDE by using the `onEnterFrame`
-    /// tag on a movieclip instance.
+    /// tag on a MovieClip instance.
     pub fn set_clip_event_handlers(
         self,
         gc_context: MutationContext<'gc, '_>,
@@ -1009,20 +1009,19 @@ impl<'gc> MovieClip<'gc> {
             let clip = self.0.read();
             let mut reader = clip.static_data.swf.read_from(0);
             while cur_frame <= frame && !reader.get_ref().is_empty() {
-                let tag_callback = |reader: &mut Reader<'_>, tag_code, tag_len| {
-                    match tag_code {
-                        TagCode::ShowFrame => cur_frame += 1,
-                        TagCode::DoAction if cur_frame == frame => {
-                            // On the target frame, add any DoAction tags to the array.
-                            if let Some(code) =
-                                clip.static_data.swf.resize_to_reader(reader, tag_len)
-                            {
-                                actions.push(code)
-                            }
-                        }
-                        _ => (),
+                let tag_callback = |reader: &mut Reader<'_>, tag_code, tag_len| match tag_code {
+                    TagCode::ShowFrame => {
+                        cur_frame += 1;
+                        Ok(())
                     }
-                    Ok(())
+                    TagCode::DoAction if cur_frame == frame => {
+                        // On the target frame, add any DoAction tags to the array.
+                        if let Some(code) = clip.static_data.swf.resize_to_reader(reader, tag_len) {
+                            actions.push(code);
+                        }
+                        Ok(())
+                    }
+                    _ => Ok(()),
                 };
 
                 let _ = tag_utils::decode_tags(&mut reader, tag_callback, TagCode::ShowFrame);
@@ -1260,11 +1259,7 @@ impl<'gc> MovieClip<'gc> {
 
         // Sanity; let's make sure we don't seek way too far.
         // TODO: This should be self.frames_loaded() when we implement that.
-        let clamped_frame = if frame <= mc.total_frames() {
-            frame
-        } else {
-            mc.total_frames()
-        };
+        let clamped_frame = frame.min(mc.total_frames());
         drop(mc);
 
         let mut reader = data.read_from(frame_pos);
@@ -1531,35 +1526,17 @@ impl<'gc> MovieClip<'gc> {
         context: &mut UpdateContext<'_, 'gc, '_>,
         display_object: DisplayObject<'gc>,
     ) {
-        let mut constructor = self.0.read().avm2_constructor.unwrap_or_else(|| {
-            let mut activation = Avm2Activation::from_nothing(context.reborrow());
-            let mut mc_proto = activation.context.avm2.prototypes().movieclip;
-            mc_proto
-                .get_property(
-                    mc_proto,
-                    &Avm2QName::new(Avm2Namespace::public(), "constructor"),
-                    &mut activation,
-                )
-                .unwrap()
-                .coerce_to_object(&mut activation)
-                .unwrap()
-        });
+        let class_object = self
+            .0
+            .read()
+            .avm2_class
+            .unwrap_or_else(|| context.avm2.classes().movieclip);
 
         let mut constr_thing = || {
             let mut activation = Avm2Activation::from_nothing(context.reborrow());
-            let proto = constructor
-                .get_property(
-                    constructor,
-                    &Avm2QName::new(Avm2Namespace::public(), "prototype"),
-                    &mut activation,
-                )?
-                .coerce_to_object(&mut activation)?;
-            let object = Avm2StageObject::for_display_object(
-                activation.context.gc_context,
-                display_object,
-                proto,
-            )
-            .into();
+            let object =
+                Avm2StageObject::for_display_object(&mut activation, display_object, class_object)?
+                    .into();
 
             Ok(object)
         };
@@ -1578,38 +1555,28 @@ impl<'gc> MovieClip<'gc> {
     /// will allocate the object first before doing so. This function is
     /// intended to be called from `post_instantiate`.
     fn construct_as_avm2_object(self, context: &mut UpdateContext<'_, 'gc, '_>) {
-        let mut constructor = self.0.read().avm2_constructor.unwrap_or_else(|| {
-            let mut activation = Avm2Activation::from_nothing(context.reborrow());
-            let mut mc_proto = activation.context.avm2.prototypes().movieclip;
-            mc_proto
-                .get_property(
-                    mc_proto,
-                    &Avm2QName::new(Avm2Namespace::public(), "constructor"),
-                    &mut activation,
-                )
-                .unwrap()
-                .coerce_to_object(&mut activation)
-                .unwrap()
-        });
+        let class_object = self
+            .0
+            .read()
+            .avm2_class
+            .unwrap_or_else(|| context.avm2.classes().movieclip);
 
         if let Avm2Value::Object(object) = self.object2() {
             let mut constr_thing = || {
                 let mut activation = Avm2Activation::from_nothing(context.reborrow());
-                let proto = constructor
-                    .get_property(
-                        constructor,
-                        &Avm2QName::new(Avm2Namespace::public(), "prototype"),
-                        &mut activation,
-                    )?
-                    .coerce_to_object(&mut activation)?;
-                constructor.call(Some(object), &[], &mut activation, Some(proto))?;
+                class_object.call_native_init(
+                    Some(object),
+                    &[],
+                    &mut activation,
+                    Some(class_object),
+                )?;
 
                 Ok(())
             };
             let result: Result<(), Avm2Error> = constr_thing();
 
             if let Err(e) = result {
-                log::error!("Got {} when constructing AVM2 side of display object", e);
+                log::error!("Got {} when constructing AVM2 side of movie clip", e);
             }
         }
     }
@@ -1646,7 +1613,7 @@ impl<'gc> MovieClip<'gc> {
         } else {
             reader.read_remove_object_2()
         }?;
-        let depth = Depth::from(remove_object.depth);
+        let depth: Depth = remove_object.depth.into();
         if let Some(i) = goto_commands.iter().position(|o| o.depth() == depth) {
             goto_commands.swap_remove(i);
         }
@@ -1912,7 +1879,7 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
         require_button_mode: bool,
     ) -> Option<DisplayObject<'gc>> {
         if self.visible() {
-            let this = DisplayObject::from(*self);
+            let this: DisplayObject<'gc> = (*self).into();
 
             if let Some(masker) = self.masker() {
                 if !masker.hit_test_shape(context, point, HitTestOptions::SKIP_INVISIBLE) {
@@ -1921,7 +1888,7 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
             }
 
             if self.world_bounds().contains(point) {
-                // This movieclip operates in "button mode" if it has a mouse handler,
+                // This MovieClip operates in "button mode" if it has a mouse handler,
                 // either via on(..) or via property mc.onRelease, etc.
                 let is_button_mode = self.is_button_mode(context);
 
@@ -2224,7 +2191,7 @@ impl<'gc> MovieClipData<'gc> {
         }?;
 
         // We merge the deltas from this PlaceObject with the previous command.
-        let depth = Depth::from(place_object.depth);
+        let depth: Depth = place_object.depth.into();
         let mut goto_place =
             GotoPlaceObject::new(self.current_frame(), place_object, is_rewind, index);
         if let Some(i) = goto_commands.iter().position(|o| o.depth() == depth) {
@@ -2274,7 +2241,7 @@ impl<'gc> MovieClipData<'gc> {
                 // (e.g., clip.onEnterFrame = foo).
                 if context.swf.version() >= 6 {
                     if let Some(name) = event.method_name() {
-                        // Keyboard events don't fire their methods unless the movieclip has focus (#2120).
+                        // Keyboard events don't fire their methods unless the MovieClip has focus (#2120).
                         if !event.is_key_event() || self.has_focus {
                             context.action_queue.queue_actions(
                                 self_display_object,
@@ -2771,24 +2738,26 @@ impl<'gc, 'a> MovieClipData<'gc> {
         tag_len: usize,
     ) -> DecodeResult {
         let button_colors = reader.read_define_button_cxform(tag_len)?;
-        if let Some(button) = context
+        match context
             .library
             .library_for_movie_mut(self.movie())
             .character_by_id(button_colors.id)
         {
-            if let Character::Avm1Button(button) = button {
+            Some(Character::Avm1Button(button)) => {
                 button.set_colors(context.gc_context, &button_colors.color_transforms[..]);
-            } else {
+            }
+            Some(_) => {
                 log::warn!(
                     "DefineButtonCxform: Tried to apply on non-button ID {}",
                     button_colors.id
                 );
             }
-        } else {
-            log::warn!(
-                "DefineButtonCxform: Character ID {} doesn't exist",
-                button_colors.id
-            );
+            None => {
+                log::warn!(
+                    "DefineButtonCxform: Character ID {} doesn't exist",
+                    button_colors.id
+                );
+            }
         }
         Ok(())
     }
@@ -2800,24 +2769,26 @@ impl<'gc, 'a> MovieClipData<'gc> {
         reader: &mut SwfStream<'a>,
     ) -> DecodeResult {
         let button_sounds = reader.read_define_button_sound()?;
-        if let Some(button) = context
+        match context
             .library
             .library_for_movie_mut(self.movie())
             .character_by_id(button_sounds.id)
         {
-            if let Character::Avm1Button(button) = button {
+            Some(Character::Avm1Button(button)) => {
                 button.set_sounds(context.gc_context, button_sounds);
-            } else {
+            }
+            Some(_) => {
                 log::warn!(
                     "DefineButtonSound: Tried to apply on non-button ID {}",
                     button_sounds.id
                 );
             }
-        } else {
-            log::warn!(
-                "DefineButtonSound: Character ID {} doesn't exist",
-                button_sounds.id
-            );
+            None => {
+                log::warn!(
+                    "DefineButtonSound: Character ID {} doesn't exist",
+                    button_sounds.id
+                );
+            }
         }
         Ok(())
     }
@@ -3025,6 +2996,21 @@ impl<'gc, 'a> MovieClipData<'gc> {
             .library
             .library_for_movie_mut(self.movie())
             .register_character(text.id, Character::Text(text_object));
+        Ok(())
+    }
+
+    #[inline]
+    fn define_binary_data(
+        &mut self,
+        context: &mut UpdateContext<'_, 'gc, '_>,
+        reader: &mut SwfStream<'a>,
+    ) -> DecodeResult {
+        let tag_data = reader.read_define_binary_data()?;
+        let binary_data = BinaryData::from_swf_tag(self.movie(), &tag_data);
+        context
+            .library
+            .library_for_movie_mut(self.movie())
+            .register_character(tag_data.id, Character::BinaryData(binary_data));
         Ok(())
     }
 

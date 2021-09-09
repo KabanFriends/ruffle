@@ -234,11 +234,11 @@ impl WebCanvasRenderBackend {
             let data = match bitmap.data {
                 BitmapFormat::Rgba(mut data) => {
                     ruffle_core::backend::render::unmultiply_alpha_rgba(&mut data[..]);
-                    encoder.set_color(png::ColorType::RGBA);
+                    encoder.set_color(png::ColorType::Rgba);
                     data
                 }
                 BitmapFormat::Rgb(data) => {
-                    encoder.set_color(png::ColorType::RGB);
+                    encoder.set_color(png::ColorType::Rgb);
                     data
                 }
             };
@@ -837,7 +837,7 @@ fn swf_shape_to_svg(
     let mut num_defs = 0;
     let mut has_linear_rgb_gradient = false;
 
-    let mut svg_paths = vec![];
+    let mut svg_paths = Vec::with_capacity(shape.paths.len());
     for path in shape.paths {
         match path {
             DrawPath::Fill { style, commands } => {

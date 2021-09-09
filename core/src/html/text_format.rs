@@ -2,13 +2,13 @@
 
 use crate::avm1::activation::Activation as Avm1Activation;
 use crate::avm1::{
-    AvmString, Object as Avm1Object, ScriptObject as Avm1ScriptObject, TObject as Avm1TObject,
-    Value as Avm1Value,
+    ArrayObject as Avm1ArrayObject, AvmString, Object as Avm1Object,
+    ScriptObject as Avm1ScriptObject, TObject as Avm1TObject, Value as Avm1Value,
 };
 use crate::avm2::{
     Activation as Avm2Activation, ArrayObject as Avm2ArrayObject, Error as Avm2Error,
-    Namespace as Avm2Namespace, Object as Avm2Object, QName as Avm2QName,
-    ScriptObject as Avm2ScriptObject, TObject as Avm2TObject, Value as Avm2Value,
+    Namespace as Avm2Namespace, Object as Avm2Object, QName as Avm2QName, TObject as Avm2TObject,
+    Value as Avm2Value,
 };
 use crate::context::UpdateContext;
 use crate::html::iterators::TextSpanIter;
@@ -190,7 +190,7 @@ fn getfloatarray_from_avm1_object<'gc>(
 }
 
 fn getstr_from_avm2_object<'gc>(
-    mut object: Avm2Object<'gc>,
+    object: Avm2Object<'gc>,
     pubname: &'static str,
     activation: &mut Avm2Activation<'_, 'gc, '_>,
 ) -> Result<Option<String>, Avm2Error> {
@@ -208,7 +208,7 @@ fn getstr_from_avm2_object<'gc>(
 }
 
 fn getfloat_from_avm2_object<'gc>(
-    mut object: Avm2Object<'gc>,
+    object: Avm2Object<'gc>,
     pubname: &'static str,
     activation: &mut Avm2Activation<'_, 'gc, '_>,
 ) -> Result<Option<f64>, Avm2Error> {
@@ -226,7 +226,7 @@ fn getfloat_from_avm2_object<'gc>(
 }
 
 fn getbool_from_avm2_object<'gc>(
-    mut object: Avm2Object<'gc>,
+    object: Avm2Object<'gc>,
     pubname: &'static str,
     activation: &mut Avm2Activation<'_, 'gc, '_>,
 ) -> Result<Option<bool>, Avm2Error> {
@@ -244,7 +244,7 @@ fn getbool_from_avm2_object<'gc>(
 }
 
 fn getfloatarray_from_avm2_object<'gc>(
-    mut object: Avm2Object<'gc>,
+    object: Avm2Object<'gc>,
     pubname: &'static str,
     activation: &mut Avm2Activation<'_, 'gc, '_>,
 ) -> Result<Option<Vec<f64>>, Avm2Error> {
@@ -257,11 +257,12 @@ fn getfloatarray_from_avm2_object<'gc>(
             Avm2Value::Undefined => None,
             Avm2Value::Null => None,
             v => {
-                let mut output = Vec::new();
-                let mut v = v.coerce_to_object(activation)?;
+                let v = v.coerce_to_object(activation)?;
                 let length = v.as_array_storage().map(|v| v.length());
 
+                let mut output = Vec::new();
                 if let Some(length) = length {
+                    output.reserve(length);
                     for i in 0..length {
                         output.push(
                             v.get_property(
@@ -574,7 +575,7 @@ impl TextFormat {
             "color",
             self.color
                 .clone()
-                .map(|v| (((v.r as u32) << 16) + ((v.g as u32) << 8) + v.b as u32).into())
+                .map(|v| v.to_rgb().into())
                 .unwrap_or(Avm1Value::Null),
             activation,
         )?;
@@ -677,20 +678,17 @@ impl TextFormat {
             activation,
         )?;
 
-        let tab_stops = if let Some(ts) = &self.tab_stops {
-            let tab_stops = Avm1ScriptObject::array(
-                activation.context.gc_context,
-                Some(activation.context.avm1.prototypes().array),
-            );
-            for (i, &tab) in ts.iter().enumerate() {
-                tab_stops
-                    .set_element(activation, i as i32, tab.into())
-                    .unwrap();
-            }
-            tab_stops.into()
-        } else {
-            Avm1Value::Null
-        };
+        let tab_stops = self
+            .tab_stops
+            .as_ref()
+            .map_or(Avm1Value::Null, |tab_stops| {
+                Avm1ArrayObject::new(
+                    activation.context.gc_context,
+                    activation.context.avm1.prototypes().array,
+                    tab_stops.iter().map(|&x| x.into()),
+                )
+                .into()
+            });
         object.set("tabStops", tab_stops, activation)?;
         Ok(object.into())
     }
@@ -700,17 +698,8 @@ impl TextFormat {
         &self,
         activation: &mut Avm2Activation<'_, 'gc, '_>,
     ) -> Result<Avm2Object<'gc>, Avm2Error> {
-        let mut proto = activation.context.avm2.prototypes().textformat;
-        let constr = proto
-            .get_property(
-                proto,
-                &Avm2QName::new(Avm2Namespace::public(), "constructor"),
-                activation,
-            )?
-            .coerce_to_object(activation)?;
-        let mut object = Avm2ScriptObject::object(activation.context.gc_context, proto);
-
-        constr.call(Some(object), &[], activation, Some(proto))?;
+        let constr = activation.context.avm2.classes().textformat;
+        let mut object = constr.construct(activation, &[])?;
 
         object.set_property(
             object,
@@ -732,7 +721,7 @@ impl TextFormat {
             &Avm2QName::new(Avm2Namespace::public(), "color"),
             self.color
                 .clone()
-                .map(|v| (((v.r as u32) << 16) + ((v.g as u32) << 8) + v.b as u32).into())
+                .map(|v| v.to_rgb().into())
                 .unwrap_or(Avm2Value::Null),
             activation,
         )?;
@@ -851,11 +840,8 @@ impl TextFormat {
 
         if let Some(ts) = &self.tab_stops {
             let tab_stop_storage = ts.iter().copied().collect();
-            let tab_stops = Avm2ArrayObject::from_array(
-                tab_stop_storage,
-                activation.context.avm2.prototypes().array,
-                activation.context.gc_context,
-            );
+
+            let tab_stops = Avm2ArrayObject::from_storage(activation, tab_stop_storage)?;
 
             object.set_property(
                 object,
@@ -1629,10 +1615,7 @@ impl FormatSpans {
                             .eq_ignore_ascii_case("br") => {}
                 Step::In(node) => format_stack.push(TextFormat::from_presentational_markup(
                     node,
-                    format_stack
-                        .last()
-                        .cloned()
-                        .unwrap_or_else(Default::default),
+                    format_stack.last().cloned().unwrap_or_default(),
                 )),
                 Step::Around(node) if node.is_text() => {
                     self.replace_text(

@@ -243,13 +243,13 @@ impl<'gc> XmlNode<'gc> {
 
             match event {
                 Event::Start(bs) => {
-                    let child = XmlNode::from_start_event(mc, bs, document)?;
+                    let child = XmlNode::from_start_event(mc, bs, document, process_entity)?;
                     self.document().update_idmap(mc, child);
                     self.add_child_to_tree(mc, &mut open_tags, child)?;
                     open_tags.push(child);
                 }
                 Event::Empty(bs) => {
-                    let child = XmlNode::from_start_event(mc, bs, document)?;
+                    let child = XmlNode::from_start_event(mc, bs, document, process_entity)?;
                     self.document().update_idmap(mc, child);
                     self.add_child_to_tree(mc, &mut open_tags, child)?;
                 }
@@ -292,19 +292,20 @@ impl<'gc> XmlNode<'gc> {
         mc: MutationContext<'gc, '_>,
         bs: BytesStart<'a>,
         document: XmlDocument<'gc>,
+        process_entity: bool,
     ) -> Result<Self, Error> {
         let tag_name = XmlName::from_bytes(bs.name())?;
         let mut attributes = BTreeMap::new();
 
         for a in bs.attributes() {
             let attribute = a?;
-            attributes.insert(
-                XmlName::from_bytes(attribute.key)?,
-                String::from_utf8(attribute.value.to_owned().to_vec())?,
-            );
+            let value = if process_entity {
+                String::from_utf8(attribute.unescaped_value()?.to_owned().to_vec())?
+            } else {
+                String::from_utf8(attribute.value.to_owned().to_vec())?
+            };
+            attributes.insert(XmlName::from_bytes(attribute.key)?, value);
         }
-
-        let children = Vec::new();
 
         Ok(XmlNode(GcCell::allocate(
             mc,
@@ -317,7 +318,7 @@ impl<'gc> XmlNode<'gc> {
                 tag_name,
                 attributes,
                 attributes_script_object: None,
-                children,
+                children: Vec::new(),
             },
         )))
     }
@@ -1151,7 +1152,7 @@ impl<'gc> XmlNode<'gc> {
     /// that yield `true` shall be printed.
     pub fn into_string<F>(self, filter: &mut F) -> Result<String, Error>
     where
-        F: FnMut(XmlNode<'gc>) -> bool,
+        F: FnMut(&XmlNode<'gc>) -> bool,
     {
         let mut buf = Vec::new();
         let mut writer = Writer::new(Cursor::new(&mut buf));
@@ -1173,9 +1174,9 @@ impl<'gc> XmlNode<'gc> {
     ) -> Result<(), Error>
     where
         W: Write,
-        F: FnMut(XmlNode<'gc>) -> bool,
+        F: FnMut(&XmlNode<'gc>) -> bool,
     {
-        let children: Vec<_> = self.children().filter(|child| filter(*child)).collect();
+        let children: Vec<_> = self.children().filter(|child| filter(child)).collect();
         let children_len = children.len();
 
         match &*self.0.read() {

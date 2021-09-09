@@ -5,7 +5,8 @@ use crate::avm1::object::{Object, TObject};
 use crate::avm1::property::Attribute;
 use crate::avm1::scope::Scope;
 use crate::avm1::{
-    fscommand, globals, scope, skip_actions, start_drag, AvmString, ScriptObject, Value,
+    fscommand, globals, scope, skip_actions, start_drag, ArrayObject, AvmString, ScriptObject,
+    Value,
 };
 use crate::backend::navigator::{NavigationMethod, RequestOptions};
 use crate::context::UpdateContext;
@@ -216,7 +217,7 @@ pub struct Activation<'a, 'gc: 'a, 'gc_context: 'a> {
     local_registers: Option<GcCell<'gc, RegisterSet<'gc>>>,
 
     /// The base clip of this stack frame.
-    /// This will be the movieclip that contains the bytecode.
+    /// This will be the MovieClip that contains the bytecode.
     base_clip: DisplayObject<'gc>,
 
     /// The current target display object of this stack frame.
@@ -657,7 +658,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     fn action_ascii_to_char(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         // In SWF6+, this operates on UTF-16 code units.
         // TODO: In SWF5 and below, this operates on bytes, regardless of the locale encoding.
-        let char_code = u32::from(self.context.avm1.pop().coerce_to_u16(self)?);
+        let char_code: u32 = self.context.avm1.pop().coerce_to_u16(self)?.into();
         let result = if char_code != 0 {
             // Unpaired surrogates turn into replacement char.
             char::try_from(char_code)
@@ -768,7 +769,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                 call_frame = Some((target, f64_to_wrapping_u32(frame)));
             }
         } else {
-            // An optional path to a movieclip and a frame #/label, such as "/clip:framelabel".
+            // An optional path to a MovieClip and a frame #/label, such as "/clip:framelabel".
             let frame_path = arg.coerce_to_string(self)?;
             if let Some((clip, frame)) = self.resolve_variable_path(target, &frame_path)? {
                 if let Some(clip) = clip.as_display_object().and_then(|o| o.as_movie_clip()) {
@@ -784,7 +785,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         };
 
         if let Some((clip, frame)) = call_frame {
-            if frame <= u32::from(u16::MAX) {
+            if frame <= u16::MAX.into() {
                 for action in clip.actions_on_frame(&mut self.context, frame as u16) {
                     let _ = self.run_child_frame_for_action(
                         "[Frame Call]",
@@ -943,7 +944,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         if name.is_empty() {
             self.context.avm1.push(func_obj);
         } else {
-            self.define_local(name, func_obj)?;
+            self.define_local(name, func_obj.into())?;
         }
 
         Ok(FrameControl::Continue)
@@ -982,7 +983,10 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         if action_func.name.is_empty() {
             self.context.avm1.push(func_obj);
         } else {
-            self.define_local(&action_func.name.to_str_lossy(self.encoding()), func_obj)?;
+            self.define_local(
+                &action_func.name.to_str_lossy(self.encoding()),
+                func_obj.into(),
+            )?;
         }
 
         Ok(FrameControl::Continue)
@@ -1131,20 +1135,18 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         let super_prototype = superclass.get("prototype", self)?.coerce_to_object(self);
         let sub_prototype = super_prototype.create_bare_object(self, super_prototype)?;
 
-        sub_prototype.set("constructor", superclass.into(), self)?;
-        sub_prototype.set_attributes(
+        sub_prototype.define_value(
             self.context.gc_context,
-            Some("constructor"),
+            "constructor",
+            superclass.into(),
             Attribute::DONT_ENUM,
-            Attribute::empty(),
         );
 
-        sub_prototype.set("__constructor__", superclass.into(), self)?;
-        sub_prototype.set_attributes(
+        sub_prototype.define_value(
             self.context.gc_context,
-            Some("__constructor__"),
+            "__constructor__",
+            superclass.into(),
             Attribute::DONT_ENUM,
-            Attribute::empty(),
         );
 
         subclass.set("prototype", sub_prototype.into(), self)?;
@@ -1172,7 +1174,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                 let display_properties = self.context.avm1.display_properties;
                 let props = display_properties.read();
                 if let Some(property) = props.get_by_index(prop_index) {
-                    property.get(self, clip)?
+                    property.get(self, clip)
                 } else {
                     avm_warn!(self, "GetProperty: Invalid property index {}", prop_index);
                     Value::Undefined
@@ -1344,7 +1346,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                 }
             }
             return Ok(FrameControl::Continue);
-        } else if window_target.starts_with("_level") && url.len() > 6 {
+        } else if window_target.starts_with("_level") && window_target.len() > 6 {
             // target of `_level#` indicates a `loadMovieNum` call.
             match window_target[6..].parse::<i32>() {
                 Ok(level_id) => {
@@ -1465,19 +1467,16 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
     fn action_init_array(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         let num_elements = self.context.avm1.pop().coerce_to_f64(self)?;
-        let result = if num_elements < 0.0 || num_elements > i32::MAX as f64 {
+        let result = if num_elements < 0.0 || num_elements > i32::MAX.into() {
             // InitArray pops no args and pushes undefined if num_elements is out of range.
             Value::Undefined
         } else {
-            let array = ScriptObject::array(
+            ArrayObject::new(
                 self.context.gc_context,
-                Some(self.context.avm1.prototypes.array),
-            );
-            for i in 0..num_elements as i32 {
-                let element = self.context.avm1.pop();
-                array.set_element(self, i, element).unwrap();
-            }
-            Value::Object(array.into())
+                self.context.avm1.prototypes().array,
+                (0..num_elements as i32).map(|_| self.context.avm1.pop()),
+            )
+            .into()
         };
 
         self.context.avm1.push(result);
@@ -1486,7 +1485,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
     fn action_init_object(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         let num_props = self.context.avm1.pop().coerce_to_f64(self)?;
-        let result = if num_props < 0.0 || num_props > i32::MAX as f64 {
+        let result = if num_props < 0.0 || num_props > i32::MAX.into() {
             // InitArray pops no args and pushes undefined if num_props is out of range.
             Value::Undefined
         } else {
@@ -1596,7 +1595,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     fn action_mb_ascii_to_char(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         // In SWF6+, this operates on UTF-16 code units.
         // TODO: In SWF5 and below, this operates on locale-dependent characters.
-        let char_code = u32::from(self.context.avm1.pop().coerce_to_u16(self)?);
+        let char_code: u32 = self.context.avm1.pop().coerce_to_u16(self)?.into();
         let result = if char_code != 0 {
             // Unpaired surrogates turn into replacement char.
             char::try_from(char_code)
@@ -1811,9 +1810,9 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             let value = match value {
                 SwfValue::Undefined => Value::Undefined,
                 SwfValue::Null => Value::Null,
-                SwfValue::Bool(v) => Value::Bool(*v),
-                SwfValue::Int(v) => f64::from(*v).into(),
-                SwfValue::Float(v) => f64::from(*v).into(),
+                SwfValue::Bool(v) => (*v).into(),
+                SwfValue::Int(v) => (*v).into(),
+                SwfValue::Float(v) => (*v).into(),
                 SwfValue::Double(v) => (*v).into(),
                 SwfValue::Str(v) => {
                     AvmString::new(self.context.gc_context, v.to_string_lossy(self.encoding()))
@@ -1976,16 +1975,16 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                 return self.action_set_target(&target);
             }
             Value::Undefined => {
-                // Reset
+                // Reset.
                 let base_clip = self.base_clip();
                 self.set_target_clip(Some(base_clip));
             }
             Value::Object(o) => {
                 if let Some(clip) = o.as_display_object() {
-                    // Movieclips can be targeted directly
+                    // MovieClips can be targeted directly.
                     self.set_target_clip(Some(clip));
                 } else {
-                    // Other objects get coerced to string
+                    // Other objects get coerced to string.
                     let target = target.coerce_to_string(self)?;
                     return self.action_set_target(&target);
                 }
@@ -2196,14 +2195,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     }
 
     fn action_to_integer(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
-        let val = self.context.avm1.pop();
-
-        let value = match val {
-            Value::Undefined | Value::Null | Value::Object(_) => 0.0,
-            _ => val.coerce_to_f64(self)?,
-        };
-
-        self.context.avm1.push(value.trunc());
+        let val = self.context.avm1.pop().coerce_to_i32(self)?;
+        self.context.avm1.push(val);
         Ok(FrameControl::Continue)
     }
 
@@ -2984,24 +2977,20 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     /// If the property does not already exist on the local scope, it will created.
     /// Otherwise, the existing property will be set to `value`. This does not crawl the scope
     /// chain. Any properties deeper in the scope chain with the same name will be shadowed.
-    pub fn define_local(
-        &mut self,
-        name: &str,
-        value: impl Into<Value<'gc>>,
-    ) -> Result<(), Error<'gc>> {
+    pub fn define_local(&mut self, name: &str, value: Value<'gc>) -> Result<(), Error<'gc>> {
         let scope = self.scope;
         let scope = scope.write(self.context.gc_context);
-        scope.define_local(name, value.into(), self)
+        scope.define_local(name, value, self)
     }
 
     /// Create a local property on the activation.
     ///
     /// This inserts a value as a stored property on the local scope. If the property already
     /// exists, it will be forcefully overwritten. Used internally to initialize objects.
-    pub fn force_define_local(&mut self, name: &str, value: impl Into<Value<'gc>>) {
+    pub fn force_define_local(&mut self, name: &str, value: Value<'gc>) {
         self.scope
             .read()
-            .force_define_local(name, value.into(), self.context.gc_context)
+            .force_define_local(name, value, self.context.gc_context)
     }
 
     /// Returns value of `this` as a reference.
@@ -3033,10 +3022,10 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     }
 
     /// Set a local register.
-    pub fn set_local_register(&mut self, id: u8, value: impl Into<Value<'gc>>) {
+    pub fn set_local_register(&mut self, id: u8, value: Value<'gc>) {
         if let Some(ref mut local_registers) = self.local_registers {
             if let Some(r) = local_registers.write(self.context.gc_context).get_mut(id) {
-                *r = value.into();
+                *r = value;
             }
         }
     }

@@ -178,6 +178,47 @@ export interface BaseLoadOptions {
         secs: number;
         nanos: number;
     };
+
+    /**
+     * Specifies the base directory or URL used to resolve all relative path statements in the SWF file.
+     * null means the current directory.
+     *
+     * @default null
+     */
+    base?: string | null;
+
+    /**
+     * If set to true, the built-in context menu items are visible
+     *
+     * This is equivalent to Stage.showMenu.
+     *
+     * @default true
+     */
+    menu?: boolean;
+
+    /**
+     *
+     * This is equivalent to Stage.align.
+     *
+     * @default ""
+     */
+    salign?: string;
+
+    /**
+     *
+     * This is equivalent to Stage.quality.
+     *
+     * @default "high"
+     */
+    quality?: string;
+
+    /**
+     *
+     * This is equivalent to Stage.scaleMode.
+     *
+     * @default "showAll"
+     */
+    scale?: string;
 }
 
 /**

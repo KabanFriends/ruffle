@@ -56,21 +56,21 @@ impl fmt::Debug for XmlIdMapObject<'_> {
 }
 
 impl<'gc> TObject<'gc> for XmlIdMapObject<'gc> {
-    fn get_local(
+    fn get_local_stored(
         &self,
         name: &str,
         activation: &mut Activation<'_, 'gc, '_>,
-        this: Object<'gc>,
-    ) -> Option<Result<Value<'gc>, Error<'gc>>> {
+    ) -> Option<Value<'gc>> {
         if let Some(mut node) = self.document().get_node_by_id(name) {
-            Some(Ok(node
-                .script_object(
+            Some(
+                node.script_object(
                     activation.context.gc_context,
                     Some(activation.context.avm1.prototypes().xml_node),
                 )
-                .into()))
+                .into(),
+            )
         } else {
-            self.base().get_local(name, activation, this)
+            self.base().get_local_stored(name, activation)
         }
     }
 
@@ -85,6 +85,7 @@ impl<'gc> TObject<'gc> for XmlIdMapObject<'gc> {
         self.base()
             .set_local(name, value, activation, this, base_proto)
     }
+
     fn call(
         &self,
         name: &str,
@@ -96,13 +97,12 @@ impl<'gc> TObject<'gc> for XmlIdMapObject<'gc> {
         self.base().call(name, activation, this, base_proto, args)
     }
 
-    fn call_setter(
-        &self,
-        name: &str,
-        value: Value<'gc>,
-        activation: &mut Activation<'_, 'gc, '_>,
-    ) -> Option<Object<'gc>> {
-        self.base().call_setter(name, value, activation)
+    fn getter(&self, name: &str, activation: &mut Activation<'_, 'gc, '_>) -> Option<Object<'gc>> {
+        self.base().getter(name, activation)
+    }
+
+    fn setter(&self, name: &str, activation: &mut Activation<'_, 'gc, '_>) -> Option<Object<'gc>> {
+        self.base().setter(name, activation)
     }
 
     fn create_bare_object(
@@ -143,19 +143,27 @@ impl<'gc> TObject<'gc> for XmlIdMapObject<'gc> {
             .add_property_with_case(activation, name, get, set, attributes)
     }
 
-    fn set_watcher(
+    fn call_watcher(
+        &self,
+        activation: &mut Activation<'_, 'gc, '_>,
+        name: &str,
+        value: &mut Value<'gc>,
+    ) -> Result<(), Error<'gc>> {
+        self.base().call_watcher(activation, name, value)
+    }
+
+    fn watch(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
         name: Cow<str>,
         callback: Object<'gc>,
         user_data: Value<'gc>,
     ) {
-        self.base()
-            .set_watcher(activation, name, callback, user_data);
+        self.base().watch(activation, name, callback, user_data);
     }
 
-    fn remove_watcher(&self, activation: &mut Activation<'_, 'gc, '_>, name: Cow<str>) -> bool {
-        self.base().remove_watcher(activation, name)
+    fn unwatch(&self, activation: &mut Activation<'_, 'gc, '_>, name: Cow<str>) -> bool {
+        self.base().unwatch(activation, name)
     }
 
     fn define_value(
@@ -180,12 +188,8 @@ impl<'gc> TObject<'gc> for XmlIdMapObject<'gc> {
             .set_attributes(gc_context, name, set_attributes, clear_attributes)
     }
 
-    fn proto(&self) -> Value<'gc> {
-        self.base().proto()
-    }
-
-    fn set_proto(&self, gc_context: MutationContext<'gc, '_>, prototype: Value<'gc>) {
-        self.base().set_proto(gc_context, prototype);
+    fn proto(&self, activation: &mut Activation<'_, 'gc, '_>) -> Value<'gc> {
+        self.base().proto(activation)
     }
 
     fn has_property(&self, activation: &mut Activation<'_, 'gc, '_>, name: &str) -> bool {

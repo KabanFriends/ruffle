@@ -393,11 +393,11 @@ fn begin_bitmap_fill<'gc>(
         // `smoothed` parameter may not be listed in some documentation.
         let is_repeating = args
             .get(2)
-            .unwrap_or(&Value::Bool(true))
+            .unwrap_or(&true.into())
             .as_bool(activation.swf_version());
         let is_smoothed = args
             .get(3)
-            .unwrap_or(&Value::Bool(false))
+            .unwrap_or(&false.into())
             .as_bool(activation.swf_version());
         movie_clip
             .as_drawing(activation.context.gc_context)
@@ -1000,10 +1000,10 @@ pub fn goto_frame<'gc>(
         }
     }
 
-    if let Some((clip, mut frame)) = call_frame {
-        frame = frame.wrapping_sub(1);
-        frame = frame.wrapping_add(i32::from(scene_offset));
-        frame = frame.saturating_add(1);
+    if let Some((clip, frame)) = call_frame {
+        let frame = frame.wrapping_sub(1);
+        let frame = frame.wrapping_add(i32::from(scene_offset));
+        let frame = frame.saturating_add(1);
         if frame > 0 {
             clip.goto_frame(&mut activation.context, frame as u16, stop);
         }
@@ -1160,14 +1160,14 @@ fn local_to_global<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Value::Object(point) = args.get(0).unwrap_or(&Value::Undefined) {
         // localToGlobal does no coercion; it fails if the properties are not numbers.
-        // It does not search the prototype chain.
+        // It does not search the prototype chain and ignores virtual properties.
         if let (Value::Number(x), Value::Number(y)) = (
             point
-                .get_local("x", activation, *point)
-                .unwrap_or(Ok(Value::Undefined))?,
+                .get_local_stored("x", activation)
+                .unwrap_or(Value::Undefined),
             point
-                .get_local("y", activation, *point)
-                .unwrap_or(Ok(Value::Undefined))?,
+                .get_local_stored("y", activation)
+                .unwrap_or(Value::Undefined),
         ) {
             let x = Twips::from_pixels(x);
             let y = Twips::from_pixels(y);
@@ -1295,14 +1295,14 @@ fn global_to_local<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Value::Object(point) = args.get(0).unwrap_or(&Value::Undefined) {
         // globalToLocal does no coercion; it fails if the properties are not numbers.
-        // It does not search the prototype chain.
+        // It does not search the prototype chain and ignores virtual properties.
         if let (Value::Number(x), Value::Number(y)) = (
             point
-                .get_local("x", activation, *point)
-                .unwrap_or(Ok(Value::Undefined))?,
+                .get_local_stored("x", activation)
+                .unwrap_or(Value::Undefined),
             point
-                .get_local("y", activation, *point)
-                .unwrap_or(Ok(Value::Undefined))?,
+                .get_local_stored("y", activation)
+                .unwrap_or(Value::Undefined),
         ) {
             let x = Twips::from_pixels(x);
             let y = Twips::from_pixels(y);

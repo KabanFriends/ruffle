@@ -236,7 +236,7 @@ impl From<BitmapFormat> for Vec<i32> {
                     let red = chunk[0];
                     let green = chunk[1];
                     let blue = chunk[2];
-                    (0xFF << 24) | ((red as i32) << 16) | ((green as i32) << 8) | (blue as i32)
+                    i32::from_le_bytes([blue, green, red, 0xFF])
                 })
                 .collect(),
             BitmapFormat::Rgba(x) => x
@@ -246,10 +246,7 @@ impl From<BitmapFormat> for Vec<i32> {
                     let green = chunk[1];
                     let blue = chunk[2];
                     let alpha = chunk[3];
-                    ((alpha as i32) << 24)
-                        | ((red as i32) << 16)
-                        | ((green as i32) << 8)
-                        | (blue as i32)
+                    i32::from_le_bytes([blue, green, red, alpha])
                 })
                 .collect(),
         }
@@ -421,7 +418,7 @@ pub fn decode_define_bits_lossless(
             let mut i = 0;
             for _ in 0..swf_tag.height {
                 for _ in 0..swf_tag.width {
-                    let compressed = ((decoded_data[i] as u16) << 8) | decoded_data[i + 1] as u16;
+                    let compressed = u16::from_be_bytes([decoded_data[i], decoded_data[i + 1]]);
                     out_data.push(rgb5_component(compressed, 10));
                     out_data.push(rgb5_component(compressed, 5));
                     out_data.push(rgb5_component(compressed, 0));
@@ -554,15 +551,15 @@ pub fn decode_png(data: &[u8]) -> Result<Bitmap, Error> {
     let mut decoder = png::Decoder::new(data);
     // EXPAND expands palettized types to RGB.
     decoder.set_transformations(Transformations::EXPAND);
-    let (info, mut reader) = decoder.read_info()?;
+    let mut reader = decoder.read_info()?;
 
-    let mut data = vec![0; info.buffer_size()];
-    reader.next_frame(&mut data)?;
+    let mut data = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut data)?;
 
     Ok(Bitmap {
         width: info.width,
         height: info.height,
-        data: if info.color_type == ColorType::RGBA {
+        data: if info.color_type == ColorType::Rgba {
             BitmapFormat::Rgba(data)
         } else {
             // EXPAND expands other types to RGB.

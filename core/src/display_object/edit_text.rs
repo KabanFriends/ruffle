@@ -6,15 +6,14 @@ use crate::avm1::{
     Value as Avm1Value,
 };
 use crate::avm2::{
-    Activation as Avm2Activation, Namespace as Avm2Namespace, Object as Avm2Object,
-    QName as Avm2QName, StageObject as Avm2StageObject, TObject as Avm2TObject,
+    Activation as Avm2Activation, Object as Avm2Object, StageObject as Avm2StageObject,
 };
 use crate::backend::ui::MouseCursor;
 use crate::context::{RenderContext, UpdateContext};
 use crate::display_object::{DisplayObjectBase, TDisplayObject};
 use crate::drawing::Drawing;
 use crate::events::{ButtonKeyCode, ClipEvent, ClipEventResult, KeyCode};
-use crate::font::{Glyph, TextRenderSettings};
+use crate::font::{round_down_to_pixel, Glyph, TextRenderSettings};
 use crate::html::{BoxBounds, FormatSpans, LayoutBox, LayoutContent, TextFormat};
 use crate::prelude::*;
 use crate::shape_utils::DrawCommand;
@@ -152,6 +151,63 @@ pub struct EditTextData<'gc> {
 
     /// Which rendering engine this text field will use.
     render_settings: TextRenderSettings,
+
+    /// How many pixels right the text is offset by. 0-based index.
+    hscroll: f64,
+
+    /// Information about the layout's current lines. Used by scroll properties.
+    line_data: Vec<LineData>,
+
+    /// How many lines down the text is offset by. 1-based index.
+    scroll: usize,
+}
+
+// TODO: would be nicer to compute (and return) this during layout, instead of afterwards
+/// Compute line (index, offset, extent) from the layout data.
+fn get_line_data(layout: &[LayoutBox]) -> Vec<LineData> {
+    // if there are no boxes, there are no lines
+    if layout.is_empty() {
+        return Vec::new();
+    }
+
+    let first_box = &layout[0];
+
+    let mut index = 1;
+    let mut offset = first_box.bounds().offset_y();
+    let mut extent = first_box.bounds().extent_y();
+
+    let mut line_data = Vec::new();
+
+    for layout_box in layout.get(1..).unwrap() {
+        let bounds = layout_box.bounds();
+
+        // if the top of the new box is lower than the bottom of the old box, it's a new line
+        if bounds.offset_y() > extent {
+            // save old line and reset
+            line_data.push(LineData {
+                index,
+                offset,
+                extent,
+            });
+
+            index += 1;
+            offset = bounds.offset_y();
+            extent = bounds.extent_y();
+        } else {
+            // otherwise we continue from the previous box
+            offset = offset.min(bounds.offset_y());
+            extent = extent.max(bounds.extent_y());
+        }
+    }
+
+    // save the final line
+    line_data.push(LineData {
+        index,
+        offset,
+        extent,
+    });
+
+    line_data
 }
 
 impl<'gc> EditText<'gc> {
@@ -204,6 +260,7 @@ impl<'gc> EditText<'gc> {
             swf_tag.is_word_wrap,
             swf_tag.is_device_font,
         );
+        let line_data = get_line_data(&layout);
 
         let has_background = swf_tag.has_border;
         let background_color = 0xFFFFFF; // Default is white
@@ -281,6 +338,9 @@ impl<'gc> EditText<'gc> {
                 selection: None,
                 has_focus: false,
                 render_settings: Default::default(),
+                hscroll: 0.0,
+                line_data,
+                scroll: 1,
             },
         ));
 
@@ -766,8 +826,12 @@ impl<'gc> EditText<'gc> {
             edit_text.is_device_font,
         );
 
+        edit_text.line_data = get_line_data(&new_layout);
         edit_text.layout = new_layout;
         edit_text.intrinsic_bounds = intrinsic_bounds;
+        // reset scroll
+        edit_text.hscroll = 0.0;
+        edit_text.scroll = 1;
 
         match autosize {
             AutoSizeMode::None => {}
@@ -820,6 +884,75 @@ impl<'gc> EditText<'gc> {
             edit_text.intrinsic_bounds.width(),
             edit_text.intrinsic_bounds.height(),
         )
+    }
+
+    /// How far the text can be scrolled right, in pixels.
+    pub fn maxhscroll(self) -> f64 {
+        let edit_text = self.0.read();
+
+        // word-wrapped text can't be scrolled
+        if edit_text.is_word_wrap {
+            return 0.0;
+        }
+
+        let base =
+            round_down_to_pixel(edit_text.intrinsic_bounds.width() - edit_text.bounds.width())
+                .to_pixels()
+                .max(0.0);
+
+        // input text boxes get extra space at the end
+        if edit_text.is_editable {
+            base + 41.0
+        } else {
+            base
+        }
+    }
+
+    /// How many lines the text can be scrolled down
+    pub fn maxscroll(self) -> usize {
+        let edit_text = self.0.read();
+
+        let line_data = &edit_text.line_data;
+
+        if line_data.is_empty() {
+            return 1;
+        }
+
+        let target = line_data.last().unwrap().extent - edit_text.bounds.height();
+
+        // minimum line n such that n.offset > max.extent - bounds.height()
+        let max_line = line_data.iter().find(|&&l| target < l.offset);
+        if let Some(line) = max_line {
+            line.index
+        } else {
+            // I don't know how this could happen, so return the limit
+            line_data.last().unwrap().index
+        }
+    }
+
+    /// The lowest visible line of text
+    pub fn bottom_scroll(self) -> usize {
+        let edit_text = self.0.read();
+
+        let line_data = &edit_text.line_data;
+
+        if line_data.is_empty() {
+            return 1;
+        }
+
+        let scroll_offset = line_data
+            .get(edit_text.scroll - 1)
+            .map_or(Twips::ZERO, |l| l.offset);
+        let target = edit_text.bounds.height() + scroll_offset;
+
+        // Line before first line with extent greater than bounds.height() + line "scroll"'s offset
+        let too_far = line_data.iter().find(|&&l| l.extent > target);
+        if let Some(line) = too_far {
+            line.index - 1
+        } else {
+            // all lines are visible
+            line_data.last().unwrap().index
+        }
     }
 
     /// Render a layout box, plus its children.
@@ -1095,6 +1228,31 @@ impl<'gc> EditText<'gc> {
         self.0.write(gc_context).render_settings = settings
     }
 
+    pub fn hscroll(self) -> f64 {
+        self.0.read().hscroll
+    }
+
+    pub fn set_hscroll(self, hscroll: f64, context: &mut UpdateContext<'_, 'gc, '_>) {
+        self.0.write(context.gc_context).hscroll = hscroll;
+    }
+
+    pub fn scroll(self) -> usize {
+        self.0.read().scroll
+    }
+
+    pub fn set_scroll(self, scroll: f64, context: &mut UpdateContext<'_, 'gc, '_>) {
+        // derived experimentally. Not exact: overflows somewhere above 767100486418432.9
+        // Checked in SWF 6, AVM1. Same in AVM2.
+        const SCROLL_OVERFLOW_LIMIT: f64 = 767100486418433.0;
+        let scroll_lines = if scroll.is_nan() || scroll < 0.0 || scroll >= SCROLL_OVERFLOW_LIMIT {
+            1
+        } else {
+            scroll as usize
+        };
+        let clamped = scroll_lines.clamp(1, self.maxscroll());
+        self.0.write(context.gc_context).scroll = clamped;
+    }
+
     pub fn screen_position_to_index(self, position: (Twips, Twips)) -> Option<usize> {
         let text = self.0.read();
         let position = self.global_to_local(position);
@@ -1285,7 +1443,7 @@ impl<'gc> EditText<'gc> {
                 if matches!(length, Ok(0)) {
                     // Add the TextField as its own listener to match Flash's behavior
                     // This makes it so that the TextField's handlers are called before other listeners'.
-                    let _ = listeners.set_element(activation, 0, object.into());
+                    listeners.set_element(activation, 0, object.into()).unwrap();
                 } else {
                     log::warn!("_listeners should be empty");
                 }
@@ -1350,29 +1508,23 @@ impl<'gc> EditText<'gc> {
         context: &mut UpdateContext<'_, 'gc, '_>,
         display_object: DisplayObject<'gc>,
     ) {
-        let mut proto = context.avm2.prototypes().textfield;
-        let object: Avm2Object<'gc> =
-            Avm2StageObject::for_display_object(context.gc_context, display_object, proto).into();
-
+        let textfield_constr = context.avm2.classes().textfield;
         let mut activation = Avm2Activation::from_nothing(context.reborrow());
-        let constr = proto
-            .get_property(
-                proto,
-                &Avm2QName::new(Avm2Namespace::public(), "constructor"),
-                &mut activation,
-            )
-            .unwrap()
-            .coerce_to_object(&mut activation)
-            .unwrap();
 
-        if let Err(e) = constr.call(Some(object), &[], &mut activation, Some(proto)) {
-            log::error!(
+        match Avm2StageObject::for_display_object_childless(
+            &mut activation,
+            display_object,
+            textfield_constr,
+        ) {
+            Ok(object) => {
+                let object: Avm2Object<'gc> = object.into();
+                self.0.write(activation.context.gc_context).object = Some(object.into())
+            }
+            Err(e) => log::error!(
                 "Got {} when constructing AVM2 side of dynamic text field",
                 e
-            );
+            ),
         }
-
-        self.0.write(activation.context.gc_context).object = Some(object.into());
     }
 }
 
@@ -1424,11 +1576,6 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
             .as_node()
             .duplicate(context.gc_context, true)
             .document();
-
-        let mut new_layout = Vec::new();
-        for layout_box in text.layout.iter() {
-            new_layout.push(layout_box.duplicate(context.gc_context));
-        }
         drop(text);
 
         let movie = self.movie().unwrap();
@@ -1498,7 +1645,12 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
     }
 
     fn width(&self) -> f64 {
-        self.0.read().bounds.width().to_pixels()
+        let edit_text = self.0.read();
+        edit_text
+            .bounds
+            .transform(&edit_text.base.transform.matrix)
+            .width()
+            .to_pixels()
     }
 
     fn set_width(&self, gc_context: MutationContext<'gc, '_>, value: f64) {
@@ -1512,7 +1664,12 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
     }
 
     fn height(&self) -> f64 {
-        self.0.read().bounds.height().to_pixels()
+        let edit_text = self.0.read();
+        edit_text
+            .bounds
+            .transform(&edit_text.base.transform.matrix)
+            .height()
+            .to_pixels()
     }
 
     fn set_height(&self, gc_context: MutationContext<'gc, '_>, value: f64) {
@@ -1562,12 +1719,24 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         );
         context.renderer.activate_mask();
 
+        let scroll_offset = if edit_text.scroll > 1 {
+            let line_data = &edit_text.line_data;
+
+            if let Some(line_data) = line_data.get(edit_text.scroll - 1) {
+                line_data.offset
+            } else {
+                Twips::ZERO
+            }
+        } else {
+            Twips::ZERO
+        };
         // TODO: Where does this come from? How is this different than INTERNAL_PADDING? Does this apply to y as well?
         // If this is actually right, offset the border in `redraw_border` instead of doing an extra push.
         context.transform_stack.push(&Transform {
             matrix: Matrix {
-                tx: Twips::from_pixels(Self::INTERNAL_PADDING),
-                ty: Twips::from_pixels(Self::INTERNAL_PADDING),
+                tx: Twips::from_pixels(Self::INTERNAL_PADDING)
+                    - Twips::from_pixels(edit_text.hscroll),
+                ty: Twips::from_pixels(Self::INTERNAL_PADDING) - scroll_offset,
                 ..Default::default()
             },
             ..Default::default()
@@ -1746,6 +1915,17 @@ struct EditTextStaticData {
 pub struct TextSelection {
     from: usize,
     to: usize,
+}
+
+/// Information about the start and end y-coordinates of a given line of text
+#[derive(Copy, Clone, Debug, Collect)]
+#[collect(require_static)]
+pub struct LineData {
+    index: usize,
+    /// How many twips down the highest point of the line is
+    offset: Twips,
+    /// How many twips down the lowest point of the line is
+    extent: Twips,
 }
 
 impl TextSelection {

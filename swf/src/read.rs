@@ -1,9 +1,4 @@
-#![allow(
-    renamed_and_removed_lints,
-    clippy::unknown_clippy_lints,
-    clippy::inconsistent_digit_grouping,
-    clippy::unreadable_literal
-)]
+#![allow(clippy::unusual_byte_groupings)]
 
 use crate::extensions::ReadSwfExt;
 use crate::{
@@ -16,7 +11,7 @@ use bitstream_io::BitRead;
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::io::{self, Read};
 
-/// Parse a decompressed SWF and return a `Vec` of tags.
+/// Parse a decompressed SWF.
 ///
 /// # Example
 /// ```
@@ -220,16 +215,11 @@ fn make_lzma_reader<'a, R: Read + 'a>(
     ))
 }
 
-pub struct BitReader<'a, 'b> {
+struct BitReader<'a, 'b> {
     bits: bitstream_io::BitReader<&'b mut &'a [u8], bitstream_io::BigEndian>,
 }
 
 impl<'a, 'b> BitReader<'a, 'b> {
-    #[inline]
-    fn byte_align(&mut self) {
-        self.bits.byte_align();
-    }
-
     #[inline]
     fn read_bit(&mut self) -> io::Result<bool> {
         self.bits.read_bit()
@@ -271,7 +261,7 @@ impl<'a, 'b> BitReader<'a, 'b> {
 
     #[inline]
     fn reader(&mut self) -> &mut &'a [u8] {
-        self.byte_align();
+        self.bits.byte_align();
         self.bits.reader().unwrap()
     }
 }
@@ -295,8 +285,8 @@ impl<'a> ReadSwfExt<'a> for Reader<'a> {
 
 impl<'a> Reader<'a> {
     #[inline]
-    pub const fn new(input: &'a [u8], version: u8) -> Reader<'a> {
-        Reader { input, version }
+    pub const fn new(input: &'a [u8], version: u8) -> Self {
+        Self { input, version }
     }
 
     /// Returns the suggested string encoding for this SWF.
@@ -333,6 +323,16 @@ impl<'a> Reader<'a> {
         }
     }
 
+    #[inline]
+    fn read_fixed8(&mut self) -> Result<Fixed8> {
+        Ok(Fixed8::from_bits(self.read_i16()?))
+    }
+
+    #[inline]
+    fn read_fixed16(&mut self) -> Result<Fixed16> {
+        Ok(Fixed16::from_bits(self.read_i32()?))
+    }
+
     /// Reads the next SWF tag from the stream.
     /// # Example
     /// ```
@@ -363,10 +363,7 @@ impl<'a> Reader<'a> {
             TagCode::ShowFrame => Tag::ShowFrame,
             TagCode::CsmTextSettings => Tag::CsmTextSettings(tag_reader.read_csm_text_settings()?),
             TagCode::DefineBinaryData => {
-                let id = tag_reader.read_u16()?;
-                tag_reader.read_u32()?; // Reserved
-                let data = tag_reader.read_slice_to_end();
-                Tag::DefineBinaryData { id, data }
+                Tag::DefineBinaryData(tag_reader.read_define_binary_data()?)
             }
             TagCode::DefineBits => {
                 let id = tag_reader.read_u16()?;
@@ -587,6 +584,7 @@ impl<'a> Reader<'a> {
 
             TagCode::VideoFrame => tag_reader.read_video_frame()?,
             TagCode::ProductInfo => Tag::ProductInfo(tag_reader.read_product_info()?),
+            TagCode::NameCharacter => Tag::NameCharacter(tag_reader.read_name_character()?),
         };
 
         if !tag_reader.input.is_empty() {
@@ -794,8 +792,7 @@ impl<'a> Reader<'a> {
         // to the characters in a button in sequence.
 
         // We don't know how many color transforms this tag will contain, so read it into a buffer.
-        let version = self.version;
-        let mut reader = Reader::new(self.read_slice(tag_length)?, version);
+        let mut reader = Reader::new(self.read_slice(tag_length)?, self.version);
 
         let id = reader.read_character_id()?;
         let mut color_transforms = Vec::new();
@@ -862,6 +859,7 @@ impl<'a> Reader<'a> {
         let mut filters = vec![];
         if (flags & 0b1_0000) != 0 {
             let num_filters = self.read_u8()?;
+            filters.reserve(num_filters as usize);
             for _ in 0..num_filters {
                 filters.push(self.read_filter()?);
             }
@@ -964,28 +962,25 @@ impl<'a> Reader<'a> {
         let id = self.read_u16()?;
         let num_glyphs = self.read_u16()? / 2;
 
-        let mut glyphs = vec![];
-        if num_glyphs > 0 {
-            for _ in 0..(num_glyphs - 1) {
-                self.read_u16()?;
-            }
+        for _ in 0..num_glyphs.saturating_sub(1) {
+            self.read_u16()?;
+        }
 
-            let swf_version = self.version;
-            for _ in 0..num_glyphs {
-                let mut glyph = vec![];
-                let num_bits = self.read_u8()?;
-                let mut shape_context = ShapeContext {
-                    swf_version,
-                    shape_version: 1,
-                    num_fill_bits: num_bits >> 4,
-                    num_line_bits: num_bits & 0b1111,
-                };
-                let mut bits = self.bits();
-                while let Some(record) = Self::read_shape_record(&mut bits, &mut shape_context)? {
-                    glyph.push(record);
-                }
-                glyphs.push(glyph);
+        let mut glyphs = Vec::with_capacity(num_glyphs as usize);
+        for _ in 0..num_glyphs {
+            let mut glyph = vec![];
+            let num_bits = self.read_u8()?;
+            let mut shape_context = ShapeContext {
+                swf_version: self.version,
+                shape_version: 1,
+                num_fill_bits: num_bits >> 4,
+                num_line_bits: num_bits & 0b1111,
+            };
+            let mut bits = self.bits();
+            while let Some(record) = Self::read_shape_record(&mut bits, &mut shape_context)? {
+                glyph.push(record);
             }
+            glyphs.push(glyph);
         }
 
         Ok(FontV1 { id, glyphs })
@@ -1040,7 +1035,7 @@ impl<'a> Reader<'a> {
                 if has_wide_offsets {
                     self.read_u32()?;
                 } else {
-                    u32::from(self.read_u16()?);
+                    self.read_u16()?;
                 };
             }
 
@@ -1048,7 +1043,7 @@ impl<'a> Reader<'a> {
             if has_wide_offsets {
                 self.read_u32()?;
             } else {
-                u32::from(self.read_u16()?);
+                self.read_u16()?;
             }
 
             // ShapeTable
@@ -1072,7 +1067,7 @@ impl<'a> Reader<'a> {
                 glyph.code = if has_wide_codes {
                     self.read_u16()?
                 } else {
-                    u16::from(self.read_u8()?)
+                    self.read_u8()?.into()
                 };
             }
         }
@@ -1146,12 +1141,12 @@ impl<'a> Reader<'a> {
             left_code: if has_wide_codes {
                 self.read_u16()?
             } else {
-                u16::from(self.read_u8()?)
+                self.read_u8()?.into()
             },
             right_code: if has_wide_codes {
                 self.read_u16()?
             } else {
-                u16::from(self.read_u8()?)
+                self.read_u8()?.into()
             },
             adjustment: Twips::new(self.read_i16()?),
         })
@@ -1206,7 +1201,7 @@ impl<'a> Reader<'a> {
             }
         } else {
             while let Ok(code) = self.read_u8() {
-                code_table.push(u16::from(code));
+                code_table.push(code.into());
             }
         }
 
@@ -1748,7 +1743,7 @@ impl<'a> Reader<'a> {
             .ok_or_else(|| Error::invalid_data("Invalid gradient spread mode"))?;
         let interpolation = GradientInterpolation::from_u8((flags >> 4) & 0b11)
             .ok_or_else(|| Error::invalid_data("Invalid gradient interpolation mode"))?;
-        let num_records = usize::from(flags & 0b1111);
+        let num_records: usize = (flags & 0b1111).into();
         Ok((num_records, spread, interpolation))
     }
 
@@ -1818,7 +1813,6 @@ impl<'a> Reader<'a> {
                 // but SWFs in the wild exist with them in DefineShape1 (generated by third party tools),
                 // and these run correctly in the Flash Player.
                 if (flags & 0b10000) != 0 {
-                    bits.byte_align();
                     let mut reader = Reader::new(bits.reader(), context.swf_version);
                     let (new_styles, num_fill_bits, num_line_bits) =
                         reader.read_shape_styles(context.shape_version)?;
@@ -1899,7 +1893,7 @@ impl<'a> Reader<'a> {
         let flags = if place_object_version >= 3 {
             self.read_u16()?
         } else {
-            u16::from(self.read_u8()?)
+            self.read_u8()?.into()
         };
 
         let depth = self.read_u16()?;
@@ -1952,8 +1946,8 @@ impl<'a> Reader<'a> {
 
         // PlaceObject3
         let filters = if (flags & 0b1_00000000) != 0 {
-            let mut filters = vec![];
             let num_filters = self.read_u8()?;
+            let mut filters = Vec::with_capacity(num_filters as usize);
             for _ in 0..num_filters {
                 filters.push(self.read_filter()?);
             }
@@ -2033,7 +2027,7 @@ impl<'a> Reader<'a> {
 
     fn read_clip_actions(&mut self) -> Result<Vec<ClipAction<'a>>> {
         self.read_u16()?; // Must be 0
-        self.read_clip_event_flags()?; // All event flags
+        self.read_clip_event_flags(); // All event flags
         let mut clip_actions = vec![];
         while let Some(clip_action) = self.read_clip_action()? {
             clip_actions.push(clip_action);
@@ -2042,7 +2036,7 @@ impl<'a> Reader<'a> {
     }
 
     fn read_clip_action(&mut self) -> Result<Option<ClipAction<'a>>> {
-        let events = self.read_clip_event_flags()?;
+        let events = self.read_clip_event_flags();
         if events.is_empty() {
             Ok(None)
         } else {
@@ -2064,51 +2058,21 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn read_clip_event_flags(&mut self) -> Result<ClipEventFlag> {
-        // TODO: Switch to a bitset.
-        let mut event_list = ClipEventFlag::empty();
-
-        let flags = self.read_u8()?;
-        event_list.set(ClipEventFlag::KEY_UP, flags & 0b1000_0000 != 0);
-        event_list.set(ClipEventFlag::KEY_DOWN, flags & 0b0100_0000 != 0);
-        event_list.set(ClipEventFlag::MOUSE_UP, flags & 0b0010_0000 != 0);
-        event_list.set(ClipEventFlag::MOUSE_DOWN, flags & 0b0001_0000 != 0);
-        event_list.set(ClipEventFlag::MOUSE_MOVE, flags & 0b0000_1000 != 0);
-        event_list.set(ClipEventFlag::UNLOAD, flags & 0b0000_0100 != 0);
-        event_list.set(ClipEventFlag::ENTER_FRAME, flags & 0b0000_0010 != 0);
-        event_list.set(ClipEventFlag::LOAD, flags & 0b0000_0001 != 0);
-
-        if self.version > 5 {
-            // There are SWFs in the wild with malformed final ClipActions that is only two bytes
-            // instead of four bytes (see #2899). Handle this gracefully to allow the tag to run.
-            // TODO: We may need a more general way to handle truncated tags, since this has
-            // occurred in a few different places.
-            // Allow for only two bytes in the clip action tag.
-            let flags = self.read_u8().unwrap_or_default();
-            let flags2 = self.read_u8().unwrap_or_default();
-            let _ = self.read_u8();
-            event_list.set(ClipEventFlag::DRAG_OVER, flags & 0b1000_0000 != 0);
-            event_list.set(ClipEventFlag::ROLL_OUT, flags & 0b0100_0000 != 0);
-            event_list.set(ClipEventFlag::ROLL_OVER, flags & 0b0010_0000 != 0);
-            event_list.set(ClipEventFlag::RELEASE_OUTSIDE, flags & 0b0001_0000 != 0);
-            event_list.set(ClipEventFlag::RELEASE, flags & 0b0000_1000 != 0);
-            event_list.set(ClipEventFlag::PRESS, flags & 0b0000_0100 != 0);
-            event_list.set(ClipEventFlag::INITIALIZE, flags & 0b0000_0010 != 0);
-            event_list.set(ClipEventFlag::DATA, flags & 0b0000_0001 != 0);
-
-            // Construct was only added in SWF7, but it's not version-gated;
-            // Construct events will still fire in SWF6 in a v7+ player. (#1424)
-            event_list.set(ClipEventFlag::CONSTRUCT, flags2 & 0b0000_0100 != 0);
-            event_list.set(ClipEventFlag::KEY_PRESS, flags2 & 0b0000_0010 != 0);
-            event_list.set(ClipEventFlag::DRAG_OUT, flags2 & 0b0000_0001 != 0);
+    fn read_clip_event_flags(&mut self) -> ClipEventFlag {
+        // There are SWFs in the wild with malformed final ClipActions that is only 2 bytes
+        // instead of 4 bytes (#2899). Handle this gracefully to allow the tag to run.
+        // TODO: We may need a more general way to handle truncated tags, since this has
+        // occurred in a few different places.
+        let bits = if self.version >= 6 {
+            self.read_u32().unwrap_or_default()
         } else {
             // SWF19 pp. 48-50: For SWFv5, the ClipEventFlags only had 2 bytes of flags,
             // with the 2nd byte reserved (all 0).
             // This was expanded to 4 bytes in SWFv6.
-            self.read_u8()?;
-        }
+            (self.read_u16().unwrap_or_default() as u8).into()
+        };
 
-        Ok(event_list)
+        ClipEventFlag::from_bits_truncate(bits)
     }
 
     pub fn read_filter(&mut self) -> Result<Filter> {
@@ -2343,6 +2307,13 @@ impl<'a> Reader<'a> {
             id: self.read_u16()?,
             sound_info: Box::new(self.read_sound_info()?),
         })
+    }
+
+    pub fn read_define_binary_data(&mut self) -> Result<DefineBinaryData<'a>> {
+        let id = self.read_u16()?;
+        self.read_u32()?; // Reserved
+        let data = self.read_slice_to_end();
+        Ok(DefineBinaryData { id, data })
     }
 
     pub fn read_define_text(&mut self, version: u8) -> Result<Text> {
@@ -2595,6 +2566,16 @@ impl<'a> Reader<'a> {
         self.get_mut().read_exact(&mut debug_id)?;
         Ok(debug_id)
     }
+
+    pub fn read_name_character(&mut self) -> Result<NameCharacter<'a>> {
+        // Not documented in SWF19 reference, and seems to be ignored by the official Flash Player.
+        // Not generated by any version of the Flash IDE, but some 3rd party tools contain it.
+        // See https://www.m2osw.com/swf_tag_namecharacter
+        Ok(NameCharacter {
+            id: self.read_character_id()?,
+            name: self.read_str()?,
+        })
+    }
 }
 
 pub fn read_compression_type<R: Read>(mut input: R) -> Result<Compression> {
@@ -2614,8 +2595,6 @@ pub mod tests {
     use super::*;
     use crate::tag_code::TagCode;
     use crate::test_data;
-    use std::fs::File;
-    use std::io::Read;
     use std::vec::Vec;
 
     fn reader(data: &[u8]) -> Reader<'_> {
@@ -2623,57 +2602,53 @@ pub mod tests {
         Reader::new(data, default_version)
     }
 
+    fn read_from_file(path: &str) -> SwfBuf {
+        let data = std::fs::read(path).unwrap();
+        decompress_swf(&data[..]).unwrap()
+    }
+
     pub fn read_tag_bytes_from_file_with_index(
         path: &str,
         tag_code: TagCode,
         mut index: usize,
     ) -> Vec<u8> {
-        let mut file = if let Ok(file) = File::open(path) {
-            file
-        } else {
-            panic!("Cannot open {}", path);
-        };
-        let mut data = Vec::new();
-        file.read_to_end(&mut data).unwrap();
+        let swf_buf = read_from_file(path);
 
         // Halfway parse the SWF file until we find the tag we're searching for.
-        let swf_buf = super::decompress_swf(&data[..]).unwrap();
-        let data = swf_buf.data;
-
-        let mut pos = 0;
-        let mut tag_header_length;
+        let mut reader = Reader::new(&swf_buf.data, swf_buf.header.version());
         loop {
-            let (swf_tag_code, length) = {
-                let mut tag_reader = Reader::new(&data[pos..], swf_buf.header.version());
-                let ret = tag_reader.read_tag_code_and_length().unwrap();
-                tag_header_length =
-                    tag_reader.get_ref().as_ptr() as usize - (pos + data.as_ptr() as usize);
-                ret
-            };
-            let tag_data = &data[pos..pos + length + tag_header_length];
-            pos += tag_header_length + length;
-            if swf_tag_code == 0 {
-                panic!("Tag not found");
-            } else if swf_tag_code == tag_code as u16 {
-                if index == 0 {
+            let tag_start = &reader.get_ref();
+            let (swf_tag_code, tag_len) = reader.read_tag_code_and_length().unwrap();
+            let tag_data = &tag_start[..reader.pos(tag_start) + tag_len];
+            let tag_end = &reader.get_ref()[tag_len..];
+            // Skip tag data.
+            *reader.get_mut() = tag_end;
+
+            match TagCode::from_u16(swf_tag_code) {
+                Some(swf_tag_code) if swf_tag_code == tag_code => {
+                    if index > 0 {
+                        index -= 1;
+                        continue;
+                    }
+
                     // Flash tends to export tags with the extended header even if the size
                     // would fit with the standard header.
                     // This screws up our tests, because swf-rs writes tags with the
                     // minimum header necessary.
                     // We want to easily write new tests by exporting SWFs from the Flash
                     // software, so rewrite with a standard header to match swf-rs output.
-                    let mut data = tag_data.to_vec();
-                    if length < 0b111111 && (data[0] & 0b111111) == 0b111111 {
-                        let mut tag_data = Vec::with_capacity(length + 2);
-                        tag_data.extend_from_slice(&data[0..2]);
-                        tag_data.extend_from_slice(&data[6..]);
-                        tag_data[0] = (data[0] & !0b111111) | (length as u8);
-                        data = tag_data;
-                    }
-                    return data;
-                } else {
-                    index -= 1;
+                    return if tag_len < 0b111111 && (tag_data[0] & 0b111111) == 0b111111 {
+                        let mut rewritten_tag_data = Vec::with_capacity(tag_len + 2);
+                        rewritten_tag_data.extend_from_slice(&tag_data[0..2]);
+                        rewritten_tag_data.extend_from_slice(&tag_data[6..]);
+                        rewritten_tag_data[0] = (tag_data[0] & !0b111111) | (tag_len as u8);
+                        rewritten_tag_data
+                    } else {
+                        tag_data.to_vec()
+                    };
                 }
+                Some(TagCode::End) => panic!("Tag not found"),
+                _ => {}
             }
         }
     }
@@ -2684,11 +2659,6 @@ pub mod tests {
 
     #[test]
     fn read_swfs() {
-        fn read_from_file(path: &str) -> SwfBuf {
-            let data = std::fs::read(path).unwrap();
-            decompress_swf(&data[..]).unwrap()
-        }
-
         assert_eq!(
             read_from_file("tests/swfs/uncompressed.swf")
                 .header

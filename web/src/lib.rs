@@ -107,6 +107,9 @@ extern "C" {
     #[wasm_bindgen(method, js_name = "displayUnsupportedMessage")]
     fn display_unsupported_message(this: &JavascriptPlayer);
 
+    #[wasm_bindgen(method, js_name = "displayRootMovieDownloadFailedMessage")]
+    fn display_root_movie_download_failed_message(this: &JavascriptPlayer);
+
     #[wasm_bindgen(method, js_name = "displayMessage")]
     fn display_message(this: &JavascriptPlayer, message: &str);
 
@@ -135,6 +138,18 @@ pub struct Config {
     #[serde(rename = "upgradeToHttps")]
     upgrade_to_https: bool,
 
+    #[serde(rename = "base")]
+    base_url: Option<String>,
+
+    #[serde(rename = "menu")]
+    show_menu: bool,
+
+    salign: Option<String>,
+
+    quality: Option<String>,
+
+    scale: Option<String>,
+
     #[serde(rename = "warnOnUnsupportedContent")]
     warn_on_unsupported_content: bool,
 
@@ -149,9 +164,14 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             allow_script_access: false,
+            show_menu: true,
+            salign: Some("".to_owned()),
+            quality: Some("high".to_owned()),
+            scale: Some("showAll".to_owned()),
             background_color: Default::default(),
             letterbox: Default::default(),
             upgrade_to_https: true,
+            base_url: None,
             warn_on_unsupported_content: true,
             log_level: log::Level::Error,
             max_execution_duration: Duration::from_secs(15),
@@ -454,6 +474,7 @@ impl Ruffle {
         let navigator = Box::new(navigator::WebNavigatorBackend::new(
             allow_script_access,
             config.upgrade_to_https,
+            config.base_url,
         ));
         let storage = match window.local_storage() {
             Ok(Some(s)) => {
@@ -480,6 +501,10 @@ impl Ruffle {
             core.set_letterbox(config.letterbox);
             core.set_warn_on_unsupported_content(config.warn_on_unsupported_content);
             core.set_max_execution_duration(config.max_execution_duration);
+            core.set_show_menu(config.show_menu);
+            core.set_stage_align(config.salign.as_deref().unwrap_or(""));
+            core.set_quality(config.quality.as_deref().unwrap_or("high"));
+            core.set_scale_mode(config.scale.as_deref().unwrap_or("showAll"));
 
             // Create the external interface.
             if allow_script_access {
@@ -944,18 +969,13 @@ impl Ruffle {
                 instance.animation_handler_id = None;
             }
 
-            // Calculate the dt from last tick.
-            dt = if let Some(prev_timestamp) = instance.timestamp {
-                instance.timestamp = Some(timestamp);
-                timestamp - prev_timestamp
-            } else {
-                // Store the timestamp from the initial tick.
-                // (I tried to use Performance.now() to get the initial timestamp,
-                // but this didn't seem to be accurate and caused negative dts on
-                // Chrome.)
-                instance.timestamp = Some(timestamp);
-                0.0
-            };
+            // Calculate the elapsed time since the last tick.
+            dt = instance
+                .timestamp
+                .map_or(0.0, |prev_timestamp| timestamp - prev_timestamp);
+
+            // Store the timestamp of the last tick.
+            instance.timestamp = Some(timestamp);
         });
 
         // Tick the Ruffle core.

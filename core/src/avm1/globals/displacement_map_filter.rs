@@ -56,7 +56,7 @@ pub fn set_alpha<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     let alpha = args
         .get(0)
-        .unwrap_or(&0.0.into())
+        .unwrap_or(&0.into())
         .coerce_to_f64(activation)
         .map(|x| x.max(0.0).min(1.0))?;
 
@@ -113,10 +113,7 @@ pub fn set_component_x<'gc>(
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let component = args
-        .get(0)
-        .unwrap_or(&0.0.into())
-        .coerce_to_i32(activation)?;
+    let component = args.get(0).unwrap_or(&0.into()).coerce_to_i32(activation)?;
 
     if let Some(object) = this.as_displacement_map_filter_object() {
         object.set_component_x(activation.context.gc_context, component);
@@ -142,10 +139,7 @@ pub fn set_component_y<'gc>(
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let component = args
-        .get(0)
-        .unwrap_or(&0.0.into())
-        .coerce_to_i32(activation)?;
+    let component = args.get(0).unwrap_or(&0.into()).coerce_to_i32(activation)?;
 
     if let Some(object) = this.as_displacement_map_filter_object() {
         object.set_component_y(activation.context.gc_context, component);
@@ -229,10 +223,9 @@ pub fn mode<'gc>(
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(object) = this.as_displacement_map_filter_object() {
-        return Ok(Value::String(AvmString::new(
-            activation.context.gc_context,
-            String::from(object.mode()),
-        )));
+        return Ok(
+            AvmString::new(activation.context.gc_context, String::from(object.mode())).into(),
+        );
     }
 
     Ok(Value::Undefined)
@@ -245,10 +238,7 @@ pub fn set_mode<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     let mode = args
         .get(0)
-        .unwrap_or(&Value::String(AvmString::new(
-            activation.context.gc_context,
-            "wrap".to_string(),
-        )))
+        .unwrap_or(&"wrap".into())
         .coerce_to_string(activation)?;
 
     if let Some(object) = this.as_displacement_map_filter_object() {
@@ -275,10 +265,7 @@ pub fn set_scale_x<'gc>(
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let scale = args
-        .get(0)
-        .unwrap_or(&0.0.into())
-        .coerce_to_f64(activation)?;
+    let scale = args.get(0).unwrap_or(&0.into()).coerce_to_f64(activation)?;
 
     if let Some(object) = this.as_displacement_map_filter_object() {
         object.set_scale_x(activation.context.gc_context, scale);
@@ -304,10 +291,7 @@ pub fn set_scale_y<'gc>(
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let scale = args
-        .get(0)
-        .unwrap_or(&0.0.into())
-        .coerce_to_f64(activation)?;
+    let scale = args.get(0).unwrap_or(&0.into()).coerce_to_f64(activation)?;
 
     if let Some(object) = this.as_displacement_map_filter_object() {
         object.set_scale_y(activation.context.gc_context, scale);

@@ -60,10 +60,7 @@ pub fn set_distance<'gc>(
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let distance = args
-        .get(0)
-        .unwrap_or(&4.0.into())
-        .coerce_to_f64(activation)?;
+    let distance = args.get(0).unwrap_or(&4.into()).coerce_to_f64(activation)?;
 
     if let Some(filter) = this.as_bevel_filter_object() {
         filter.set_distance(activation.context.gc_context, distance);
@@ -394,10 +391,7 @@ pub fn set_type<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     let type_: BevelFilterType = args
         .get(0)
-        .unwrap_or(&Value::String(AvmString::new(
-            activation.context.gc_context,
-            "inner".to_string(),
-        )))
+        .unwrap_or(&"inner".into())
         .coerce_to_string(activation)
         .map(|s| s.as_str().into())?;
 

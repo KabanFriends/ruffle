@@ -13,7 +13,7 @@ pub use fixed::*;
 pub use matrix::Matrix;
 
 /// A complete header and tags in the SWF file.
-/// This is returned by the `swf::read_swf` convenience method.
+/// This is returned by the `swf::parse_swf` convenience method.
 #[derive(Debug)]
 pub struct Swf<'a> {
     pub header: HeaderExt,
@@ -420,12 +420,8 @@ impl Color {
     /// let blue = Color::from_rgb(0x0000FF, 255);
     /// ```
     pub const fn from_rgb(rgb: u32, alpha: u8) -> Self {
-        Self {
-            r: ((rgb & 0xFF_0000) >> 16) as u8,
-            g: ((rgb & 0x00_FF00) >> 8) as u8,
-            b: (rgb & 0x00_00FF) as u8,
-            a: alpha,
-        }
+        let [b, g, r, _] = rgb.to_le_bytes();
+        Self { r, g, b, a: alpha }
     }
 
     /// Converts the color to a 32-bit RGB value.
@@ -451,7 +447,22 @@ impl Color {
     /// assert_eq!(color1.to_rgb(), color2.to_rgb());
     /// ```
     pub const fn to_rgb(&self) -> u32 {
-        ((self.r as u32) << 16) | ((self.g as u32) << 8) | (self.b as u32)
+        u32::from_le_bytes([self.b, self.g, self.r, 0])
+    }
+
+    /// Converts the color to a 32-bit RGBA value.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    /// ```rust
+    /// use swf::Color;
+    ///
+    /// let color = Color::from_rgb(0xFF00FF, 255);
+    /// assert_eq!(color.to_rgba(), 0xFFFF00FF);
+    /// ```
+    pub const fn to_rgba(&self) -> u32 {
+        u32::from_le_bytes([self.b, self.g, self.r, self.a])
     }
 }
 
@@ -715,7 +726,7 @@ impl BlendMode {
     }
 }
 
-/// An clip action (a.k.a. clip event) placed on a movieclip instance.
+/// An clip action (a.k.a. clip event) placed on a MovieClip instance.
 /// Created in the Flash IDE using `onClipEvent` or `on` blocks.
 ///
 /// [SWF19 pp.37-38 ClipActionRecord](https://www.adobe.com/content/dam/acom/en/devnet/pdf/swf-file-format-spec.pdf#page=39)
@@ -727,30 +738,34 @@ pub struct ClipAction<'a> {
 }
 
 bitflags! {
-    /// An event that can be attached to a movieclip instance using
-    /// an `onClipEvent` or `on` block.
+    /// An event that can be attached to a MovieClip instance using an `onClipEvent` or `on` block.
     ///
     /// [SWF19 pp.48-50 ClipEvent](https://www.adobe.com/content/dam/acom/en/devnet/pdf/swf-file-format-spec.pdf#page=50)
     pub struct ClipEventFlag: u32 {
-        const CONSTRUCT       = 1 << 0;
-        const DATA            = 1 << 1;
-        const DRAG_OUT        = 1 << 2;
-        const DRAG_OVER       = 1 << 3;
-        const ENTER_FRAME     = 1 << 4;
-        const INITIALIZE      = 1 << 5;
-        const KEY_UP          = 1 << 6;
-        const KEY_DOWN        = 1 << 7;
-        const KEY_PRESS       = 1 << 8;
-        const LOAD            = 1 << 9;
-        const MOUSE_UP        = 1 << 10;
-        const MOUSE_DOWN      = 1 << 11;
-        const MOUSE_MOVE      = 1 << 12;
-        const PRESS           = 1 << 13;
+        const LOAD            = 1 << 0;
+        const ENTER_FRAME     = 1 << 1;
+        const UNLOAD          = 1 << 2;
+        const MOUSE_MOVE      = 1 << 3;
+        const MOUSE_DOWN      = 1 << 4;
+        const MOUSE_UP        = 1 << 5;
+        const KEY_DOWN        = 1 << 6;
+        const KEY_UP          = 1 << 7;
+
+        // Added in SWF6.
+        const DATA            = 1 << 8;
+        const INITIALIZE      = 1 << 9;
+        const PRESS           = 1 << 10;
+        const RELEASE         = 1 << 11;
+        const RELEASE_OUTSIDE = 1 << 12;
+        const ROLL_OVER       = 1 << 13;
         const ROLL_OUT        = 1 << 14;
-        const ROLL_OVER       = 1 << 15;
-        const RELEASE         = 1 << 16;
-        const RELEASE_OUTSIDE = 1 << 17;
-        const UNLOAD          = 1 << 18;
+        const DRAG_OVER       = 1 << 15;
+        const DRAG_OUT        = 1 << 16;
+        const KEY_PRESS       = 1 << 17;
+
+        // Construct was only added in SWF7, but it's not version-gated;
+        // Construct events will still fire in SWF6 in a v7+ player (#1424).
+        const CONSTRUCT       = 1 << 18;
     }
 }
 
@@ -760,7 +775,7 @@ pub type KeyCode = u8;
 /// Represents a tag in an SWF file.
 ///
 /// The SWF format is made up of a stream of tags. Each tag either
-/// defines a character (graphic, sound, movieclip), or places/modifies
+/// defines a character (Graphic, Sound, MovieClip), or places/modifies
 /// an instance of these characters on the display list.
 ///
 // [SWF19 p.29](https://www.adobe.com/content/dam/acom/en/devnet/pdf/swf-file-format-spec.pdf#page=29)
@@ -776,10 +791,7 @@ pub enum Tag<'a> {
     Protect(Option<&'a SwfStr>),
     CsmTextSettings(CsmTextSettings),
     DebugId(DebugId),
-    DefineBinaryData {
-        id: CharacterId,
-        data: &'a [u8],
-    },
+    DefineBinaryData(DefineBinaryData<'a>),
     DefineBits {
         id: CharacterId,
         jpeg_data: &'a [u8],
@@ -836,6 +848,7 @@ pub enum Tag<'a> {
         imports: Vec<ExportedAsset<'a>>,
     },
     JpegTables(JpegTables<'a>),
+    NameCharacter(NameCharacter<'a>),
     SetBackgroundColor(SetBackgroundColor),
     SetTabIndex {
         depth: Depth,
@@ -1291,6 +1304,12 @@ pub struct FontInfo<'a> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct DefineBinaryData<'a> {
+    pub id: CharacterId,
+    pub data: &'a [u8],
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Text {
     pub id: CharacterId,
     pub bounds: Rectangle,
@@ -1506,3 +1525,12 @@ pub struct ProductInfo {
 
 /// `DebugId` is a UUID written to debug SWFs and used by the Flash Debugger.
 pub type DebugId = [u8; 16];
+
+/// An undocumented and unused tag to set the instance name of a character.
+/// This seems to have no effect in the official Flash Player.
+/// Superseded by the PlaceObject2 tag.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NameCharacter<'a> {
+    pub id: CharacterId,
+    pub name: &'a SwfStr,
+}

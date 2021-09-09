@@ -1,9 +1,4 @@
-#![allow(
-    clippy::cognitive_complexity,
-    clippy::float_cmp,
-    clippy::inconsistent_digit_grouping,
-    clippy::unreadable_literal
-)]
+#![allow(clippy::unusual_byte_groupings)]
 
 use crate::{
     error::{Error, Result},
@@ -22,16 +17,16 @@ use std::io::{self, Write};
 /// use swf::*;
 ///
 /// let header = Header {
-///         compression: Compression::Zlib,
-///         version: 6,
-///         stage_size: Rectangle { x_min: Twips::from_pixels(0.0), x_max: Twips::from_pixels(400.0), y_min: Twips::from_pixels(0.0), y_max: Twips::from_pixels(400.0) },
-///         frame_rate: Fixed8::from_f32(60.0),
-///         num_frames: 1,
-///     };
+///     compression: Compression::Zlib,
+///     version: 6,
+///     stage_size: Rectangle { x_min: Twips::from_pixels(0.0), x_max: Twips::from_pixels(400.0), y_min: Twips::from_pixels(0.0), y_max: Twips::from_pixels(400.0) },
+///     frame_rate: Fixed8::from_f32(60.0),
+///     num_frames: 1,
+/// };
 /// let tags = [
-///         Tag::SetBackgroundColor(Color { r: 255, g: 0, b: 0, a: 255 }),
-///         Tag::ShowFrame
-///     ];
+///     Tag::SetBackgroundColor(Color { r: 255, g: 0, b: 0, a: 255 }),
+///     Tag::ShowFrame,
+/// ];
 /// let output = Vec::new();
 /// swf::write_swf(&header, &tags, output).unwrap();
 /// ```
@@ -63,22 +58,16 @@ pub fn write_swf<W: Write>(header: &Header, tags: &[Tag<'_>], mut output: W) -> 
 
     // Compress SWF body.
     match header.compression {
-        Compression::None => {
-            output.write_all(&swf_body)?;
-        }
+        Compression::None => output.write_all(&swf_body)?,
 
         Compression::Zlib => write_zlib_swf(&mut output, &swf_body)?,
 
-        // LZMA header.
-        // SWF format has a mangled LZMA header, so we have to do some magic to convert the
-        // standard LZMA header to SWF format.
-        // https://adobe.ly/2s8oYzn
         Compression::Lzma => {
             write_lzma_swf(&mut output, &swf_body)?;
             // 5 bytes of garbage data?
             //output.write_all(&[0xFF, 0xB5, 0xE6, 0xF8, 0xCB])?;
         }
-    };
+    }
 
     Ok(())
 }
@@ -265,13 +254,8 @@ impl<W: Write> SwfWriteExt for Writer<W> {
 }
 
 impl<W: Write> Writer<W> {
-    fn new(output: W, version: u8) -> Writer<W> {
-        Writer { output, version }
-    }
-
-    #[allow(dead_code)]
-    fn into_inner(self) -> W {
-        self.output
+    fn new(output: W, version: u8) -> Self {
+        Self { output, version }
     }
 
     #[inline]
@@ -281,10 +265,12 @@ impl<W: Write> Writer<W> {
         }
     }
 
+    #[inline]
     fn write_fixed8(&mut self, n: Fixed8) -> io::Result<()> {
         self.write_i16(n.get())
     }
 
+    #[inline]
     fn write_fixed16(&mut self, n: Fixed16) -> io::Result<()> {
         self.write_i32(n.get())
     }
@@ -368,7 +354,7 @@ impl<W: Write> Writer<W> {
         let mut num_bits = if has_mult {
             multiply
                 .iter()
-                .map(|n| count_sbits(n.get() as i32))
+                .map(|n| count_sbits(n.get().into()))
                 .max()
                 .unwrap()
         } else {
@@ -377,10 +363,7 @@ impl<W: Write> Writer<W> {
         if has_add {
             num_bits = max(
                 num_bits,
-                add.iter()
-                    .map(|n| count_sbits(i32::from(*n)))
-                    .max()
-                    .unwrap(),
+                add.iter().map(|n| count_sbits((*n).into())).max().unwrap(),
             );
         }
         bits.write_ubits(4, num_bits)?;
@@ -433,10 +416,7 @@ impl<W: Write> Writer<W> {
         if has_add {
             num_bits = max(
                 num_bits,
-                add.iter()
-                    .map(|n| count_sbits(i32::from(*n)))
-                    .max()
-                    .unwrap(),
+                add.iter().map(|n| count_sbits((*n).into())).max().unwrap(),
             );
         }
         bits.write_ubits(4, num_bits)?;
@@ -519,12 +499,7 @@ impl<W: Write> Writer<W> {
                 self.write_u8(0)?; // Reserved (0).
             }
 
-            Tag::DefineBinaryData { id, data } => {
-                self.write_tag_header(TagCode::DefineBinaryData, data.len() as u32 + 6)?;
-                self.write_u16(id)?;
-                self.write_u32(0)?; // Reserved
-                self.output.write_all(data)?;
-            }
+            Tag::DefineBinaryData(ref binary_data) => self.write_define_binary_data(binary_data)?,
 
             Tag::DefineBits { id, jpeg_data } => {
                 self.write_tag_header(TagCode::DefineBits, jpeg_data.len() as u32 + 2)?;
@@ -635,7 +610,7 @@ impl<W: Write> Writer<W> {
 
             Tag::DefineFont(ref font) => {
                 let num_glyphs = font.glyphs.len();
-                let mut offsets = vec![];
+                let mut offsets = Vec::with_capacity(num_glyphs);
                 let mut buf = vec![];
                 {
                     let mut writer = Writer::new(&mut buf, self.version);
@@ -979,7 +954,7 @@ impl<W: Write> Writer<W> {
             }
             Tag::ProductInfo(ref product_info) => self.write_product_info(product_info)?,
             Tag::DebugId(ref debug_id) => self.write_debug_id(debug_id)?,
-
+            Tag::NameCharacter(ref name_character) => self.write_name_character(name_character)?,
             Tag::Unknown { tag_code, data } => {
                 self.write_tag_code_and_length(tag_code, data.len() as u32)?;
                 self.output.write_all(data)?;
@@ -2034,30 +2009,11 @@ impl<W: Write> Writer<W> {
 
     fn write_clip_event_flags(&mut self, clip_events: ClipEventFlag) -> Result<()> {
         // TODO: Assert proper version.
-        let version = self.version;
-        let mut bits = self.bits();
-        bits.write_bit(clip_events.contains(ClipEventFlag::KEY_UP))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::KEY_DOWN))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::MOUSE_UP))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::MOUSE_DOWN))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::MOUSE_MOVE))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::UNLOAD))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::ENTER_FRAME))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::LOAD))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::DRAG_OVER))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::ROLL_OUT))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::ROLL_OVER))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::RELEASE_OUTSIDE))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::RELEASE))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::PRESS))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::INITIALIZE))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::DATA))?;
-        if version >= 6 {
-            bits.write_ubits(5, 0)?;
-            bits.write_bit(clip_events.contains(ClipEventFlag::CONSTRUCT))?;
-            bits.write_bit(clip_events.contains(ClipEventFlag::KEY_PRESS))?;
-            bits.write_bit(clip_events.contains(ClipEventFlag::DRAG_OUT))?;
-            bits.write_ubits(8, 0)?;
+        let bits = clip_events.bits();
+        if self.version >= 6 {
+            self.write_u32(bits)?;
+        } else {
+            self.write_u16((bits as u8).into())?;
         }
         Ok(())
     }
@@ -2152,7 +2108,7 @@ impl<W: Write> Writer<W> {
 
             // We must write the glyph shapes into a temporary buffer
             // so that we can calculate their offsets.
-            let mut offsets = vec![];
+            let mut offsets = Vec::with_capacity(num_glyphs);
             let mut has_wide_offsets = false;
             let has_wide_codes = !font.is_ansi;
             let mut shape_buf = Vec::new();
@@ -2301,6 +2257,14 @@ impl<W: Write> Writer<W> {
             self.write_u8(kerning.right_code as u8)?;
         }
         self.write_i16(kerning.adjustment.get() as i16)?; // TODO(Herschel): Handle overflow
+        Ok(())
+    }
+
+    fn write_define_binary_data(&mut self, binary_data: &DefineBinaryData) -> Result<()> {
+        self.write_tag_header(TagCode::DefineBinaryData, binary_data.data.len() as u32 + 6)?;
+        self.write_u16(binary_data.id)?;
+        self.write_u32(0)?; // Reserved
+        self.output.write_all(binary_data.data)?;
         Ok(())
     }
 
@@ -2467,6 +2431,13 @@ impl<W: Write> Writer<W> {
 
     fn write_debug_id(&mut self, debug_id: &DebugId) -> Result<()> {
         self.output.write_all(debug_id)?;
+        Ok(())
+    }
+
+    fn write_name_character(&mut self, name_character: &NameCharacter) -> Result<()> {
+        self.write_tag_header(TagCode::NameCharacter, 3 + name_character.name.len() as u32)?;
+        self.write_character_id(name_character.id)?;
+        self.write_string(name_character.name)?;
         Ok(())
     }
 

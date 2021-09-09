@@ -2,10 +2,9 @@
 
 use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
-use crate::avm1::object::script_object::ScriptObject;
 use crate::avm1::object::xml_object::XmlObject;
 use crate::avm1::property_decl::{define_properties_on, Declaration};
-use crate::avm1::{AvmString, Object, TObject, Value};
+use crate::avm1::{ArrayObject, AvmString, Object, TObject, Value};
 use crate::avm_warn;
 use crate::backend::navigator::RequestOptions;
 use crate::xml;
@@ -73,7 +72,7 @@ const XML_PROTO_DECLS: &[Declaration] = declare_properties! {
 /// not. Those nodes are filtered from all attributes that return XML nodes to
 /// act as if those nodes did not exist. For example, `prevSibling` skips
 /// past incompatible nodes, etc.
-fn is_as2_compatible(node: XmlNode<'_>) -> bool {
+fn is_as2_compatible(node: &XmlNode<'_>) -> bool {
     node.is_document_root() || node.is_element() || node.is_text()
 }
 
@@ -180,10 +179,12 @@ pub fn xmlnode_clone_node<'gc>(
     ) {
         let mut clone_node = xmlnode.duplicate(activation.context.gc_context, deep);
 
-        return Ok(Value::Object(clone_node.script_object(
-            activation.context.gc_context,
-            Some(activation.context.avm1.prototypes.xml_node),
-        )));
+        return Ok(clone_node
+            .script_object(
+                activation.context.gc_context,
+                Some(activation.context.avm1.prototypes.xml_node),
+            )
+            .into());
     }
 
     Ok(Value::Undefined)
@@ -357,34 +358,19 @@ pub fn xmlnode_child_nodes<'gc>(
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(node) = this.as_xml_node() {
-        let array = ScriptObject::array(
+        return Ok(ArrayObject::new(
             activation.context.gc_context,
-            Some(activation.context.avm1.prototypes.array),
-        );
-
-        let mut compatible_nodes = 0;
-        for mut child in node.children() {
-            if !is_as2_compatible(child) {
-                continue;
-            }
-
-            array
-                .set_element(
-                    activation,
-                    compatible_nodes,
-                    child
-                        .script_object(
-                            activation.context.gc_context,
-                            Some(activation.context.avm1.prototypes.xml_node),
-                        )
-                        .into(),
-                )
-                .unwrap();
-
-            compatible_nodes += 1;
-        }
-
-        return Ok(array.into());
+            activation.context.avm1.prototypes().array,
+            node.children().filter(is_as2_compatible).map(|mut child| {
+                child
+                    .script_object(
+                        activation.context.gc_context,
+                        Some(activation.context.avm1.prototypes.xml_node),
+                    )
+                    .into()
+            }),
+        )
+        .into());
     }
 
     Ok(Value::Undefined)
@@ -399,7 +385,7 @@ pub fn xmlnode_first_child<'gc>(
         let mut children = node.children();
         let mut next = children.next();
         while let Some(my_next) = next {
-            if is_as2_compatible(my_next) {
+            if is_as2_compatible(&my_next) {
                 break;
             }
 
@@ -430,7 +416,7 @@ pub fn xmlnode_last_child<'gc>(
         let mut children = node.children();
         let mut prev = children.next_back();
         while let Some(my_prev) = prev {
-            if is_as2_compatible(my_prev) {
+            if is_as2_compatible(&my_prev) {
                 break;
             }
 
@@ -481,7 +467,7 @@ pub fn xmlnode_previous_sibling<'gc>(
     if let Some(node) = this.as_xml_node() {
         let mut prev = node.prev_sibling();
         while let Some(my_prev) = prev {
-            if is_as2_compatible(my_prev) {
+            if is_as2_compatible(&my_prev) {
                 break;
             }
 
@@ -510,7 +496,7 @@ pub fn xmlnode_next_sibling<'gc>(
     if let Some(node) = this.as_xml_node() {
         let mut next = node.next_sibling();
         while let Some(my_next) = next {
-            if is_as2_compatible(my_next) {
+            if is_as2_compatible(&my_next) {
                 break;
             }
 
@@ -856,23 +842,25 @@ pub fn xml_status<'gc>(
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(node) = this.as_xml_node() {
-        return match node.document().last_parse_error() {
-            None => Ok(XML_NO_ERROR.into()),
+        let status = match node.document().last_parse_error() {
+            None => XML_NO_ERROR,
             Some(err) => match err.ref_error() {
-                ParseError::UnexpectedEof(_) => Ok(Value::Number(XML_ELEMENT_MALFORMED)),
-                ParseError::EndEventMismatch { .. } => Ok(Value::Number(XML_MISMATCHED_END)),
-                ParseError::XmlDeclWithoutVersion(_) => Ok(Value::Number(XML_DECL_NOT_TERMINATED)),
-                ParseError::NameWithQuote(_) => Ok(Value::Number(XML_ELEMENT_MALFORMED)),
-                ParseError::NoEqAfterName(_) => Ok(Value::Number(XML_ELEMENT_MALFORMED)),
-                ParseError::UnquotedValue(_) => Ok(Value::Number(XML_ATTRIBUTE_NOT_TERMINATED)),
-                ParseError::DuplicatedAttribute(_, _) => Ok(Value::Number(XML_ELEMENT_MALFORMED)),
-                _ => Ok(Value::Number(XML_OUT_OF_MEMORY)), //Not accounted for:
-                                                           //ParseError::UnexpectedToken(_)
-                                                           //ParseError::UnexpectedBang
-                                                           //ParseError::TextNotFound
-                                                           //ParseError::EscapeError(_)
+                ParseError::UnexpectedEof(_) => XML_ELEMENT_MALFORMED,
+                ParseError::EndEventMismatch { .. } => XML_MISMATCHED_END,
+                ParseError::XmlDeclWithoutVersion(_) => XML_DECL_NOT_TERMINATED,
+                ParseError::NameWithQuote(_) => XML_ELEMENT_MALFORMED,
+                ParseError::NoEqAfterName(_) => XML_ELEMENT_MALFORMED,
+                ParseError::UnquotedValue(_) => XML_ATTRIBUTE_NOT_TERMINATED,
+                ParseError::DuplicatedAttribute(_, _) => XML_ELEMENT_MALFORMED,
+                _ => XML_OUT_OF_MEMORY,
+                // Not accounted for:
+                // ParseError::UnexpectedToken(_)
+                // ParseError::UnexpectedBang
+                // ParseError::TextNotFound
+                // ParseError::EscapeError(_)
             },
         };
+        return Ok(status.into());
     }
 
     Ok(Value::Undefined)

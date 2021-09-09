@@ -8,13 +8,13 @@ pub struct AdpcmDecoder<R: Read> {
     is_stereo: bool,
     bits_per_sample: usize,
     sample_num: u16,
-    left_sample: i32,
+    left_sample: i16,
     left_step_index: i16,
-    left_step: i32,
-    right_sample: i32,
+    left_step: u16,
+    right_sample: i16,
     right_step_index: i16,
-    right_step: i32,
-    decoder: fn(i32, i32) -> i32,
+    right_step: u16,
+    decoder: fn(u16, i32) -> u16,
 }
 
 impl<R: Read> AdpcmDecoder<R> {
@@ -25,7 +25,7 @@ impl<R: Read> AdpcmDecoder<R> {
         &[-1, -1, -1, -1, -1, -1, -1, -1, 1, 2, 4, 6, 8, 10, 13, 16],
     ];
 
-    const STEP_TABLE: [i32; 89] = [
+    const STEP_TABLE: [u16; 89] = [
         7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60,
         66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371,
         408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878,
@@ -34,9 +34,9 @@ impl<R: Read> AdpcmDecoder<R> {
         29794, 32767,
     ];
 
-    const SAMPLE_DELTA_CALCULATOR: [fn(i32, i32) -> i32; 4] = [
+    const SAMPLE_DELTA_CALCULATOR: [fn(u16, i32) -> u16; 4] = [
         // 2 bits
-        |step: i32, magnitude: i32| {
+        |step: u16, magnitude: i32| {
             let mut delta = step >> 1;
             if magnitude & 1 != 0 {
                 delta += step;
@@ -44,7 +44,7 @@ impl<R: Read> AdpcmDecoder<R> {
             delta
         },
         // 3 bits
-        |step: i32, magnitude: i32| {
+        |step: u16, magnitude: i32| {
             let mut delta = step >> 2;
             if magnitude & 1 != 0 {
                 delta += step >> 1;
@@ -55,7 +55,7 @@ impl<R: Read> AdpcmDecoder<R> {
             delta
         },
         // 4 bits
-        |step: i32, magnitude: i32| {
+        |step: u16, magnitude: i32| {
             let mut delta = step >> 3;
             if magnitude & 1 != 0 {
                 delta += step >> 2;
@@ -69,7 +69,7 @@ impl<R: Read> AdpcmDecoder<R> {
             delta
         },
         // 5 bits
-        |step: i32, magnitude: i32| {
+        |step: u16, magnitude: i32| {
             let mut delta = step >> 4;
             if magnitude & 1 != 0 {
                 delta += step >> 3;
@@ -95,27 +95,19 @@ impl<R: Read> AdpcmDecoder<R> {
         }) as usize
             + 2;
 
-        let left_sample = 0;
-        let left_step_index = 0;
-        let left_step = 0;
-        let right_sample = 0;
-        let right_step_index = 0;
-        let right_step = 0;
-        let decoder = Self::SAMPLE_DELTA_CALCULATOR[bits_per_sample - 2];
-
         Self {
             inner: reader,
             sample_rate,
             is_stereo,
             bits_per_sample,
             sample_num: 0,
-            left_sample,
-            left_step,
-            left_step_index,
-            right_sample,
-            right_step,
-            right_step_index,
-            decoder,
+            left_sample: 0,
+            left_step: 0,
+            left_step_index: 0,
+            right_sample: 0,
+            right_step: 0,
+            right_step_index: 0,
+            decoder: Self::SAMPLE_DELTA_CALCULATOR[bits_per_sample - 2],
         }
     }
 
@@ -144,19 +136,13 @@ impl<R: Read> AdpcmDecoder<R> {
         let magnitude = data & !sign_mask;
         let delta = (self.decoder)(self.left_step, magnitude);
 
-        if (data & sign_mask) != 0 {
-            self.left_sample -= delta;
+        self.left_sample = if (data & sign_mask) != 0 {
+            (self.left_sample as i32 - delta as i32).max(i16::MIN.into())
         } else {
-            self.left_sample += delta;
-        }
-        if self.left_sample < (i16::MIN as i32) {
-            self.left_sample = i16::MIN as i32;
-        } else if self.left_sample > (i16::MAX as i32) {
-            self.left_sample = i16::MAX as i32;
-        }
+            (self.left_sample as i32 + delta as i32).min(i16::MAX.into())
+        } as i16;
 
-        let i = magnitude as usize;
-        self.left_step_index += Self::INDEX_TABLE[self.bits_per_sample - 2][i];
+        self.left_step_index += Self::INDEX_TABLE[self.bits_per_sample - 2][magnitude as usize];
         if self.left_step_index < 0 {
             self.left_step_index = 0;
         } else if self.left_step_index >= Self::STEP_TABLE.len() as i16 {
@@ -171,19 +157,14 @@ impl<R: Read> AdpcmDecoder<R> {
             let magnitude = data & !sign_mask;
             let delta = (self.decoder)(self.right_step, magnitude);
 
-            if (data & sign_mask) != 0 {
-                self.right_sample -= delta;
+            self.right_sample = if (data & sign_mask) != 0 {
+                (self.right_sample as i32 - delta as i32).max(i16::MIN.into())
             } else {
-                self.right_sample += delta;
-            }
-            if self.right_sample < (i16::MIN as i32) {
-                self.right_sample = i16::MIN as i32;
-            } else if self.right_sample > (i16::MAX as i32) {
-                self.right_sample = i16::MAX as i32;
-            }
+                (self.right_sample as i32 + delta as i32).min(i16::MAX.into())
+            } as i16;
 
-            let i = magnitude as usize;
-            self.right_step_index += Self::INDEX_TABLE[self.bits_per_sample - 2][i];
+            self.right_step_index +=
+                Self::INDEX_TABLE[self.bits_per_sample - 2][magnitude as usize];
             if self.right_step_index < 0 {
                 self.right_step_index = 0;
             } else if self.right_step_index >= Self::STEP_TABLE.len() as i16 {
@@ -197,12 +178,13 @@ impl<R: Read> AdpcmDecoder<R> {
 
 impl<R: Read> Iterator for AdpcmDecoder<R> {
     type Item = [i16; 2];
+
     fn next(&mut self) -> Option<Self::Item> {
         self.next_sample().ok()?;
         if self.is_stereo {
-            Some([self.left_sample as i16, self.right_sample as i16])
+            Some([self.left_sample, self.right_sample])
         } else {
-            Some([self.left_sample as i16, self.left_sample as i16])
+            Some([self.left_sample, self.left_sample])
         }
     }
 }

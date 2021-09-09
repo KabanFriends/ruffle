@@ -2,7 +2,9 @@ use crate::avm1::{
     Error as Avm1Error, Object as Avm1Object, TObject as Avm1TObject, Value as Avm1Value,
 };
 use crate::avm2::{
-    Avm2, Event as Avm2Event, Object as Avm2Object, TObject as Avm2TObject, Value as Avm2Value,
+    Activation as Avm2Activation, Avm2, Error as Avm2Error, Event as Avm2Event,
+    Namespace as Avm2Namespace, Object as Avm2Object, QName as Avm2QName, TObject as Avm2TObject,
+    Value as Avm2Value,
 };
 use crate::context::{RenderContext, UpdateContext};
 use crate::drawing::Drawing;
@@ -90,7 +92,7 @@ pub struct DisplayObjectBase<'gc> {
     /// The display object we are currently masking.
     maskee: Option<DisplayObject<'gc>>,
 
-    /// Bit flags for various display object properites.
+    /// Bit flags for various display object properties.
     flags: DisplayObjectFlags,
 }
 
@@ -559,7 +561,7 @@ pub trait TDisplayObject<'gc>:
         let mut matrix = *self.matrix();
         while let Some(display_object) = node {
             // TODO: We don't want to include the stage transform because it includes the scale
-            // mode and alignemnt transform, but the AS APIs expect "global" to be relative to the
+            // mode and alignment transform, but the AS APIs expect "global" to be relative to the
             // Stage, not final view coordinates.
             // I suspect we want this to include the stage transform eventually.
             if display_object.as_stage().is_some() {
@@ -933,9 +935,9 @@ pub trait TDisplayObject<'gc>:
         enter_frame_evt.set_bubbles(false);
         enter_frame_evt.set_cancelable(false);
 
-        let dobject_proto = context.avm2.prototypes().display_object;
+        let dobject_constr = context.avm2.classes().display_object;
 
-        if let Err(e) = Avm2::broadcast_event(context, enter_frame_evt, dobject_proto) {
+        if let Err(e) = Avm2::broadcast_event(context, enter_frame_evt, dobject_constr) {
             log::error!(
                 "Encountered AVM2 error when broadcasting enterFrame event: {}",
                 e
@@ -972,16 +974,16 @@ pub trait TDisplayObject<'gc>:
         self.run_frame(context);
     }
 
-    /// Emit an `frameConstructed` event on this DisplayObject and any children it
+    /// Emit a `frameConstructed` event on this DisplayObject and any children it
     /// may have.
     fn frame_constructed(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
         let mut frame_constructed_evt = Avm2Event::new("frameConstructed");
         frame_constructed_evt.set_bubbles(false);
         frame_constructed_evt.set_cancelable(false);
 
-        let dobject_proto = context.avm2.prototypes().display_object;
+        let dobject_constr = context.avm2.classes().display_object;
 
-        if let Err(e) = Avm2::broadcast_event(context, frame_constructed_evt, dobject_proto) {
+        if let Err(e) = Avm2::broadcast_event(context, frame_constructed_evt, dobject_constr) {
             log::error!(
                 "Encountered AVM2 error when broadcasting frameConstructed event: {}",
                 e
@@ -1004,9 +1006,9 @@ pub trait TDisplayObject<'gc>:
         exit_frame_evt.set_bubbles(false);
         exit_frame_evt.set_cancelable(false);
 
-        let dobject_proto = context.avm2.prototypes().display_object;
+        let dobject_constr = context.avm2.classes().display_object;
 
-        if let Err(e) = Avm2::broadcast_event(context, exit_frame_evt, dobject_proto) {
+        if let Err(e) = Avm2::broadcast_event(context, exit_frame_evt, dobject_constr) {
             log::error!(
                 "Encountered AVM2 error when broadcasting exitFrame event: {}",
                 e
@@ -1137,15 +1139,15 @@ pub trait TDisplayObject<'gc>:
 
     /// Called when this object should be replaced by a PlaceObject tag.
     fn replace_with(&self, _context: &mut UpdateContext<'_, 'gc, '_>, _id: CharacterId) {
-        // Noop for most symbols; only shapes can replace their innards with another graphic.
+        // Noop for most symbols; only shapes can replace their innards with another Graphic.
     }
 
     fn object(&self) -> Avm1Value<'gc> {
-        Avm1Value::Undefined // todo: impl for every type and delete this fallback
+        Avm1Value::Undefined // TODO: Implement for every type and delete this fallback.
     }
 
     fn object2(&self) -> Avm2Value<'gc> {
-        Avm2Value::Undefined // todo: see above
+        Avm2Value::Undefined // TODO: See above.
     }
 
     fn set_object2(&mut self, _mc: MutationContext<'gc, '_>, _to: Avm2Object<'gc>) {}
@@ -1225,7 +1227,7 @@ pub trait TDisplayObject<'gc>:
         true
     }
 
-    /// The cursor to use when this object is the hovered element under a mouse
+    /// The cursor to use when this object is the hovered element under a mouse.
     fn mouse_cursor(&self) -> MouseCursor {
         MouseCursor::Hand
     }
@@ -1701,7 +1703,7 @@ bitflags! {
     }
 }
 
-/// Represents the sound transfomr of sounds played inside a Flash MovieClip.
+/// Represents the sound transform of sounds played inside a Flash MovieClip.
 /// Every value is a percentage (0-100), but out of range values are allowed.
 /// In AVM1, this is returned by `Sound.getTransform`.
 /// In AVM2, this is returned by `Sprite.soundTransform`.
@@ -1725,14 +1727,14 @@ impl SoundTransform {
         const MAX_VOLUME: i64 = SoundTransform::MAX_VOLUME as i64;
         self.volume = (i64::from(self.volume) * i64::from(other.volume) / MAX_VOLUME) as i32;
 
-        let ll0 = i64::from(self.left_to_left);
-        let lr0 = i64::from(self.left_to_right);
-        let rl0 = i64::from(self.right_to_left);
-        let rr0 = i64::from(self.right_to_right);
-        let ll1 = i64::from(other.left_to_left);
-        let lr1 = i64::from(other.left_to_right);
-        let rl1 = i64::from(other.right_to_left);
-        let rr1 = i64::from(other.right_to_right);
+        let ll0: i64 = self.left_to_left.into();
+        let lr0: i64 = self.left_to_right.into();
+        let rl0: i64 = self.right_to_left.into();
+        let rr0: i64 = self.right_to_right.into();
+        let ll1: i64 = other.left_to_left.into();
+        let lr1: i64 = other.left_to_right.into();
+        let rl1: i64 = other.right_to_left.into();
+        let rr1: i64 = other.right_to_right.into();
         self.left_to_left = ((ll0 * ll1 + rl0 * lr1) / MAX_VOLUME) as i32;
         self.left_to_right = ((lr0 * ll1 + rr0 * lr1) / MAX_VOLUME) as i32;
         self.right_to_left = ((ll0 * rl1 + rl0 * rr1) / MAX_VOLUME) as i32;
@@ -1765,6 +1767,98 @@ impl SoundTransform {
         }
         self.left_to_right = 0;
         self.right_to_left = 0;
+    }
+
+    pub fn from_avm2_object<'gc>(
+        activation: &mut Avm2Activation<'_, 'gc, '_>,
+        as3_st: Avm2Object<'gc>,
+    ) -> Result<Self, Avm2Error> {
+        Ok(SoundTransform {
+            left_to_left: (as3_st
+                .get_property(
+                    as3_st,
+                    &Avm2QName::new(Avm2Namespace::public(), "leftToLeft"),
+                    activation,
+                )?
+                .coerce_to_number(activation)?
+                * 100.0) as i32,
+            left_to_right: (as3_st
+                .get_property(
+                    as3_st,
+                    &Avm2QName::new(Avm2Namespace::public(), "leftToRight"),
+                    activation,
+                )?
+                .coerce_to_number(activation)?
+                * 100.0) as i32,
+            right_to_left: (as3_st
+                .get_property(
+                    as3_st,
+                    &Avm2QName::new(Avm2Namespace::public(), "rightToLeft"),
+                    activation,
+                )?
+                .coerce_to_number(activation)?
+                * 100.0) as i32,
+            right_to_right: (as3_st
+                .get_property(
+                    as3_st,
+                    &Avm2QName::new(Avm2Namespace::public(), "rightToRight"),
+                    activation,
+                )?
+                .coerce_to_number(activation)?
+                * 100.0) as i32,
+            volume: (as3_st
+                .get_property(
+                    as3_st,
+                    &Avm2QName::new(Avm2Namespace::public(), "volume"),
+                    activation,
+                )?
+                .coerce_to_number(activation)?
+                * 100.0) as i32,
+        })
+    }
+
+    pub fn into_avm2_object<'gc>(
+        self,
+        activation: &mut Avm2Activation<'_, 'gc, '_>,
+    ) -> Result<Avm2Object<'gc>, Avm2Error> {
+        let mut as3_st = activation
+            .avm2()
+            .classes()
+            .soundtransform
+            .construct(activation, &[])?;
+
+        as3_st.set_property(
+            as3_st,
+            &Avm2QName::new(Avm2Namespace::public(), "leftToLeft"),
+            (self.left_to_left as f64 / 100.0).into(),
+            activation,
+        )?;
+        as3_st.set_property(
+            as3_st,
+            &Avm2QName::new(Avm2Namespace::public(), "leftToRight"),
+            (self.left_to_right as f64 / 100.0).into(),
+            activation,
+        )?;
+        as3_st.set_property(
+            as3_st,
+            &Avm2QName::new(Avm2Namespace::public(), "rightToLeft"),
+            (self.right_to_left as f64 / 100.0).into(),
+            activation,
+        )?;
+        as3_st.set_property(
+            as3_st,
+            &Avm2QName::new(Avm2Namespace::public(), "rightToRight"),
+            (self.right_to_right as f64 / 100.0).into(),
+            activation,
+        )?;
+        as3_st.set_property(
+            as3_st,
+            &Avm2QName::new(Avm2Namespace::public(), "volume"),
+            (self.volume as f64 / 100.0).into(),
+            activation,
+        )?;
+
+        Ok(as3_st)
     }
 }
 

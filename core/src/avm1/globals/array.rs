@@ -4,7 +4,7 @@ use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
 use crate::avm1::function::{Executable, FunctionObject};
 use crate::avm1::property_decl::{define_properties_on, Declaration};
-use crate::avm1::{AvmString, Object, ScriptObject, TObject, Value};
+use crate::avm1::{ArrayObject, AvmString, Object, TObject, Value};
 use bitflags::bitflags;
 use gc_arena::MutationContext;
 use std::cmp::Ordering;
@@ -60,7 +60,7 @@ pub fn create_array_object<'gc>(
     let array = FunctionObject::constructor(
         gc_context,
         Executable::Native(constructor),
-        Executable::Native(array_function),
+        Executable::Native(constructor),
         Some(fn_proto),
         array_proto,
     );
@@ -73,10 +73,10 @@ pub fn create_array_object<'gc>(
     array
 }
 
-/// Implements `Array` constructor
+/// Implements `Array` constructor and function
 pub fn constructor<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-    this: Object<'gc>,
+    _this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let [Value::Number(length)] = *args {
@@ -86,26 +86,17 @@ pub fn constructor<'gc>(
         } else {
             i32::MIN
         };
-        this.set_length(activation, length)?;
+        let array = ArrayObject::empty(activation);
+        array.set_length(activation, length)?;
+        Ok(array.into())
     } else {
-        for (i, &arg) in args.iter().enumerate() {
-            this.set_element(activation, i as i32, arg)?;
-        }
+        Ok(ArrayObject::new(
+            activation.context.gc_context,
+            activation.context.avm1.prototypes().array,
+            args.iter().cloned(),
+        )
+        .into())
     }
-    Ok(this.into())
-}
-
-/// Implements `Array` function
-pub fn array_function<'gc>(
-    activation: &mut Activation<'_, 'gc, '_>,
-    _this: Object<'gc>,
-    args: &[Value<'gc>],
-) -> Result<Value<'gc>, Error<'gc>> {
-    let array = ScriptObject::array(
-        activation.context.gc_context,
-        Some(activation.context.avm1.prototypes.array),
-    );
-    constructor(activation, array.into(), args)
 }
 
 pub fn push<'gc>(
@@ -145,7 +136,10 @@ pub fn unshift<'gc>(
         this.set_element(activation, i as i32, arg)?;
     }
 
-    this.set_length(activation, new_length)?;
+    if this.as_array_object().is_some() {
+        this.set_length(activation, new_length)?;
+    }
+
     Ok(new_length.into())
 }
 
@@ -172,7 +166,10 @@ pub fn shift<'gc>(
 
     this.delete_element(activation, length - 1);
 
-    this.set_length(activation, length - 1)?;
+    if this.as_array_object().is_some() {
+        this.set_length(activation, length - 1)?;
+    }
+
     Ok(first)
 }
 
@@ -181,15 +178,19 @@ pub fn pop<'gc>(
     this: Object<'gc>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let old_length = this.length(activation)?;
-    if old_length == 0 {
+    let length = this.length(activation)?;
+    if length == 0 {
         return Ok(Value::Undefined);
     }
 
-    let new_length = old_length - 1;
-    let last = this.get_element(activation, new_length);
-    this.delete_element(activation, new_length);
-    this.set_length(activation, new_length)?;
+    let last = this.get_element(activation, length - 1);
+
+    this.delete_element(activation, length - 1);
+
+    if this.as_array_object().is_some() {
+        this.set_length(activation, length - 1)?;
+    }
+
     Ok(last)
 }
 
@@ -297,18 +298,12 @@ pub fn slice<'gc>(
         make_index_absolute(end.coerce_to_i32(activation)?, length)
     };
 
-    let array = ScriptObject::array(
+    Ok(ArrayObject::new(
         activation.context.gc_context,
-        Some(activation.context.avm1.prototypes.array),
-    );
-    for i in start..end {
-        if this.has_element(activation, i) {
-            let element = this.get_element(activation, i);
-            array.set_element(activation, i - start, element).unwrap();
-        }
-    }
-
-    Ok(array.into())
+        activation.context.avm1.prototypes().array,
+        (start..end).map(|i| this.get_element(activation, i)),
+    )
+    .into())
 }
 
 pub fn splice<'gc>(
@@ -332,17 +327,9 @@ pub fn splice<'gc>(
         length - start
     };
 
-    let result_array = ScriptObject::array(
-        activation.context.gc_context,
-        Some(activation.context.avm1.prototypes.array),
-    );
-    for i in 0..delete_count {
-        if this.has_element(activation, start + i) {
-            let element = this.get_element(activation, start + i);
-            result_array.set_element(activation, i, element).unwrap();
-        }
-    }
-    result_array.set_length(activation, delete_count).unwrap();
+    let result_elements: Vec<_> = (0..delete_count)
+        .map(|i| this.get_element(activation, start + i))
+        .collect();
 
     let items = if args.len() > 2 { &args[2..] } else { &[] };
     // TODO: Avoid code duplication.
@@ -371,7 +358,12 @@ pub fn splice<'gc>(
     }
     this.set_length(activation, length - delete_count + items.len() as i32)?;
 
-    Ok(result_array.into())
+    Ok(ArrayObject::new(
+        activation.context.gc_context,
+        activation.context.avm1.prototypes().array,
+        result_elements,
+    )
+    .into())
 }
 
 pub fn concat<'gc>(
@@ -379,21 +371,10 @@ pub fn concat<'gc>(
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let result_array = ScriptObject::array(
-        activation.context.gc_context,
-        Some(activation.context.avm1.prototypes.array),
-    );
-
-    let mut index = 0;
+    let mut elements = vec![];
     for &value in [this.into()].iter().chain(args) {
         let array_object = if let Value::Object(object) = value {
-            if activation
-                .context
-                .avm1
-                .prototypes
-                .array
-                .is_prototype_of(object)
-            {
+            if object.as_array_object().is_some() {
                 Some(object)
             } else {
                 None
@@ -405,21 +386,19 @@ pub fn concat<'gc>(
         if let Some(array_object) = array_object {
             let length = array_object.length(activation)?;
             for i in 0..length {
-                if array_object.has_element(activation, i) {
-                    let element = array_object.get_element(activation, i);
-                    result_array
-                        .set_element(activation, index, element)
-                        .unwrap();
-                    index += 1;
-                }
+                let element = array_object.get_element(activation, i);
+                elements.push(element);
             }
         } else {
-            result_array.set_element(activation, index, value).unwrap();
-            index += 1;
+            elements.push(value);
         }
     }
-
-    Ok(result_array.into())
+    Ok(ArrayObject::new(
+        activation.context.gc_context,
+        activation.context.avm1.prototypes().array,
+        elements,
+    )
+    .into())
 }
 
 pub fn to_string<'gc>(
@@ -442,10 +421,10 @@ fn sort<'gc>(
     let (compare_fn, flags) = match args {
         [Value::Number(_), Value::Number(n), ..] => (None, f64_to_wrapping_i32(*n)),
         [Value::Number(n), ..] => (None, f64_to_wrapping_i32(*n)),
-        [compare_fn @ Value::Object(_), Value::Number(n), ..] => {
+        [Value::Object(compare_fn), Value::Number(n), ..] => {
             (Some(compare_fn), f64_to_wrapping_i32(*n))
         }
-        [compare_fn @ Value::Object(_), ..] => (Some(compare_fn), 0),
+        [Value::Object(compare_fn), ..] => (Some(compare_fn), 0),
         [] => (None, 0),
         _ => return Ok(Value::Undefined),
     };
@@ -597,17 +576,12 @@ fn sort_with_function<'gc>(
     if flags.contains(SortFlags::RETURN_INDEXED_ARRAY) {
         // Array.RETURNINDEXEDARRAY returns an array containing the sorted indices, and does not modify
         // the original array.
-        let array = ScriptObject::array(
+        Ok(ArrayObject::new(
             activation.context.gc_context,
-            Some(activation.context.avm1.prototypes.array),
-        );
-        for (i, (index, _)) in values.into_iter().enumerate() {
-            array
-                .set_element(activation, i as i32, index.into())
-                .unwrap();
-        }
-        array.set_length(activation, length).unwrap();
-        Ok(array.into())
+            activation.context.avm1.prototypes().array,
+            values.into_iter().map(|(index, _)| index.into()),
+        )
+        .into())
     } else {
         // Standard sort modifies the original array, and returns it.
         // AS2 reference incorrectly states this returns nothing, but it returns the original array, sorted.
@@ -624,10 +598,10 @@ pub fn create_proto<'gc>(
     proto: Object<'gc>,
     fn_proto: Object<'gc>,
 ) -> Object<'gc> {
-    let array = ScriptObject::array(gc_context, Some(proto));
+    let array = ArrayObject::empty_with_proto(gc_context, Some(proto));
     let object = array.as_script_object().unwrap();
     define_properties_on(PROTO_DECLS, gc_context, object, fn_proto);
-    array.into()
+    object.into()
 }
 
 fn sort_compare_string<'gc>(
@@ -701,7 +675,7 @@ fn sort_compare_custom<'gc>(
     this: Object<'gc>,
     a: &Value<'gc>,
     b: &Value<'gc>,
-    compare_fn: &Value<'gc>,
+    compare_fn: &Object<'gc>,
 ) -> Ordering {
     // TODO: Handle errors.
     let args = [*a, *b];

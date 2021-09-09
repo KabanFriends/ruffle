@@ -2,18 +2,18 @@
 
 use crate::avm1::AvmString;
 use crate::avm2::class::{Class, ClassAttributes};
-use crate::avm2::method::{Method, NativeMethod};
+use crate::avm2::method::{Method, NativeMethodImpl};
 use crate::avm2::{Activation, Error, Namespace, Object, QName, TObject, Value};
 use gc_arena::{GcCell, MutationContext};
 
-fn create_point<'gc>(
+pub fn create_point<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     coords: (f64, f64),
 ) -> Result<Value<'gc>, Error> {
-    let proto = activation.context.avm2.prototypes().point;
+    let point_class = activation.context.avm2.classes().point;
+
     let args = [Value::Number(coords.0), Value::Number(coords.1)];
-    let new_point = proto.construct(activation, &args)?;
-    instance_init(activation, Some(new_point), &args)?;
+    let new_point = point_class.construct(activation, &args)?;
 
     Ok(new_point.into())
 }
@@ -318,8 +318,13 @@ pub fn to_string<'gc>(
     this: Option<Object<'gc>>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error> {
-    if let Some(mut this) = this {
-        let (x, y) = coords(&mut this, activation)?;
+    if let Some(this) = this {
+        let x = this
+            .get_property(this, &QName::new(Namespace::public(), "x"), activation)?
+            .coerce_to_string(activation)?;
+        let y = this
+            .get_property(this, &QName::new(Namespace::public(), "y"), activation)?
+            .coerce_to_string(activation)?;
         return Ok(
             AvmString::new(activation.context.gc_context, format!("(x={}, y={})", x, y)).into(),
         );
@@ -333,26 +338,29 @@ pub fn create_class<'gc>(mc: MutationContext<'gc, '_>) -> GcCell<'gc, Class<'gc>
     let class = Class::new(
         QName::new(Namespace::package("flash.geom"), "Point"),
         Some(QName::new(Namespace::public(), "Object").into()),
-        Method::from_builtin(instance_init),
-        Method::from_builtin(class_init),
+        Method::from_builtin(instance_init, "<Point instance initializer>", mc),
+        Method::from_builtin(class_init, "<Point class initializer>", mc),
         mc,
     );
 
     let mut write = class.write(mc);
     write.set_attributes(ClassAttributes::SEALED);
 
-    const PUBLIC_INSTANCE_PROPERTIES: &[(&str, Option<NativeMethod>, Option<NativeMethod>)] =
-        &[("length", Some(length), None)];
-    write.define_public_builtin_instance_properties(PUBLIC_INSTANCE_PROPERTIES);
+    const PUBLIC_INSTANCE_PROPERTIES: &[(
+        &str,
+        Option<NativeMethodImpl>,
+        Option<NativeMethodImpl>,
+    )] = &[("length", Some(length), None)];
+    write.define_public_builtin_instance_properties(mc, PUBLIC_INSTANCE_PROPERTIES);
 
-    const PUBLIC_CLASS_METHODS: &[(&str, NativeMethod)] = &[
+    const PUBLIC_CLASS_METHODS: &[(&str, NativeMethodImpl)] = &[
         ("distance", distance),
         ("interpolate", interpolate),
         ("polar", polar),
     ];
-    write.define_public_builtin_class_methods(PUBLIC_CLASS_METHODS);
+    write.define_public_builtin_class_methods(mc, PUBLIC_CLASS_METHODS);
 
-    const PUBLIC_INSTANCE_METHODS: &[(&str, NativeMethod)] = &[
+    const PUBLIC_INSTANCE_METHODS: &[(&str, NativeMethodImpl)] = &[
         ("add", add),
         ("clone", clone),
         ("copyFrom", copy_from),
@@ -363,6 +371,6 @@ pub fn create_class<'gc>(mc: MutationContext<'gc, '_>) -> GcCell<'gc, Class<'gc>
         ("subtract", subtract),
         ("toString", to_string),
     ];
-    write.define_public_builtin_instance_methods(PUBLIC_INSTANCE_METHODS);
+    write.define_public_builtin_instance_methods(mc, PUBLIC_INSTANCE_METHODS);
     class
 }

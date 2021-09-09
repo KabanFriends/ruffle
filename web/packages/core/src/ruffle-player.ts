@@ -32,8 +32,10 @@ enum PanicError {
     JavascriptConfiguration,
     JavascriptConflict,
     WasmCors,
+    WasmDownload,
     WasmMimeType,
     WasmNotFound,
+    SwfFetchError,
 }
 
 // Safari still requires prefixed fullscreen APIs, see:
@@ -120,6 +122,8 @@ export class RufflePlayer extends HTMLElement {
     // so avoid shadowing it.
     private contextMenuElement: HTMLElement;
     private hasContextMenu = false;
+    // Allows the user to permanently disable the context menu.
+    private contextMenuForceDisabled = false;
 
     // Whether this device is a touch device.
     // Set to true when a touch event is encountered.
@@ -128,14 +132,14 @@ export class RufflePlayer extends HTMLElement {
     private swfUrl?: string;
     private instance: Ruffle | null;
     private options: BaseLoadOptions | null;
-    private _trace_observer: ((message: string) => void) | null;
     private lastActivePlayingState: boolean;
 
     private _metadata: MovieMetadata | null;
     private _readyState: ReadyState;
 
-    private ruffleConstructor: Promise<typeof Ruffle>;
     private panicked = false;
+
+    private isExtension = false;
 
     /**
      * Triggered when a movie metadata has been loaded (such as movie width and height).
@@ -143,6 +147,13 @@ export class RufflePlayer extends HTMLElement {
      * @event RufflePlayer#loadedmetadata
      */
     static LOADED_METADATA = "loadedmetadata";
+
+    /**
+     * Triggered when a movie is fully loaded.
+     *
+     * @event RufflePlayer#loadeddata
+     */
+    static LOADED_DATA = "loadeddata";
 
     /**
      * A movie can communicate with the hosting page using fscommand
@@ -195,10 +206,7 @@ export class RufflePlayer extends HTMLElement {
         this.container = this.shadow.getElementById("container")!;
         this.playButton = this.shadow.getElementById("play_button")!;
         if (this.playButton) {
-            this.playButton.addEventListener(
-                "click",
-                this.playButtonClicked.bind(this)
-            );
+            this.playButton.addEventListener("click", () => this.play());
         }
 
         this.unmuteOverlay = this.shadow.getElementById("unmute_overlay")!;
@@ -211,12 +219,9 @@ export class RufflePlayer extends HTMLElement {
         this.instance = null;
         this.options = null;
         this.onFSCommand = null;
-        this._trace_observer = null;
 
         this._readyState = ReadyState.HaveNothing;
         this._metadata = null;
-
-        this.ruffleConstructor = loadRuffle();
 
         this.lastActivePlayingState = false;
         this.setupPauseOnTabHidden();
@@ -373,7 +378,7 @@ export class RufflePlayer extends HTMLElement {
     private async ensureFreshInstance(config: BaseLoadOptions): Promise<void> {
         this.destroy();
 
-        const ruffleConstructor = await this.ruffleConstructor.catch((e) => {
+        const ruffleConstructor = await loadRuffle(config).catch((e) => {
             console.error(`Serious error loading Ruffle: ${e}`);
 
             // Serious duck typing. In error conditions, let's not make assumptions.
@@ -391,15 +396,14 @@ export class RufflePlayer extends HTMLElement {
                     e.ruffleIndexError = PanicError.WasmCors;
                 } else if (message.includes("disallowed by embedder")) {
                     e.ruffleIndexError = PanicError.CSPConflict;
-                } else if (
-                    message.includes("webassembly.instantiate") &&
-                    e.name === "CompileError"
-                ) {
+                } else if (e.name === "CompileError") {
                     e.ruffleIndexError = PanicError.InvalidWasm;
                 } else if (
-                    !message.includes("magic") &&
-                    (e.name === "CompileError" || e.name === "TypeError")
+                    message.includes("could not download wasm module") &&
+                    e.name === "TypeError"
                 ) {
+                    e.ruffleIndexError = PanicError.WasmDownload;
+                } else if (e.name === "TypeError") {
                     e.ruffleIndexError = PanicError.JavascriptConflict;
                 }
             }
@@ -570,7 +574,7 @@ export class RufflePlayer extends HTMLElement {
                     ...sanitizeParameters(options.parameters),
                 };
 
-                this.instance!.stream_from(options.url, parameters);
+                this.instance!.stream_from(this.swfUrl, parameters);
             } else if ("data" in options) {
                 console.log("Loading SWF data");
                 this.instance!.load_data(
@@ -582,10 +586,6 @@ export class RufflePlayer extends HTMLElement {
             console.error(`Serious error occurred loading SWF file: ${err}`);
             throw err;
         }
-    }
-
-    private playButtonClicked(): void {
-        this.play();
     }
 
     /**
@@ -655,7 +655,7 @@ export class RufflePlayer extends HTMLElement {
     }
 
     private pointerDown(event: PointerEvent): void {
-        // Disable context menu when touch support is being used
+        // Give option to disable context menu when touch support is being used
         // to avoid a long press triggering the context menu. (#1972)
         if (event.pointerType === "touch" || event.pointerType === "pen") {
             this.isTouch = true;
@@ -667,7 +667,8 @@ export class RufflePlayer extends HTMLElement {
         const items = [];
 
         if (this.instance) {
-            const customItems: InternalContextMenuItem[] = this.instance.prepare_context_menu();
+            const customItems: InternalContextMenuItem[] =
+                this.instance.prepare_context_menu();
             customItems.forEach((item, index) => {
                 if (item.separatorBefore) items.push(null);
                 items.push({
@@ -696,19 +697,28 @@ export class RufflePlayer extends HTMLElement {
             }
         }
         items.push(null);
+
+        const extensionString = this.isExtension ? "extension" : "";
         items.push({
-            text: `About Ruffle (%VERSION_NAME%)`,
+            text: `About Ruffle ${extensionString} (%VERSION_NAME%)`,
             onClick() {
                 window.open(RUFFLE_ORIGIN, "_blank");
             },
         });
+        if (this.isTouch) {
+            items.push(null);
+            items.push({
+                text: "Hide this menu",
+                onClick: () => (this.contextMenuForceDisabled = true),
+            });
+        }
         return items;
     }
 
     private showContextMenu(e: MouseEvent): void {
         e.preventDefault();
 
-        if (!this.hasContextMenu || this.isTouch) {
+        if (!this.hasContextMenu || this.contextMenuForceDisabled) {
             return;
         }
 
@@ -738,7 +748,7 @@ export class RufflePlayer extends HTMLElement {
             } else {
                 const { text, onClick, enabled } = item;
                 const menuItem = document.createElement("li");
-                menuItem.className = "menu_item active";
+                menuItem.className = "menu_item";
                 menuItem.textContent = text;
                 this.contextMenuElement.appendChild(menuItem);
 
@@ -815,7 +825,6 @@ export class RufflePlayer extends HTMLElement {
      * Used by the polyfill elements, RuffleObject and RuffleEmbed.
      *
      * @param elem The element to copy all attributes from.
-     *
      * @protected
      */
     protected copyElement(elem: HTMLElement): void {
@@ -975,6 +984,7 @@ export class RufflePlayer extends HTMLElement {
         errorArray.push(`Channel: %VERSION_CHANNEL%\n`);
         errorArray.push(`Built: %BUILD_DATE%\n`);
         errorArray.push(`Commit: %COMMIT_HASH%\n`);
+        errorArray.push(`Is extension: ${this.isExtension}\n`);
 
         const errorText = errorArray.join("");
 
@@ -1047,6 +1057,16 @@ export class RufflePlayer extends HTMLElement {
                     <li><a href="#" id="panic-view-details">View Error Details</a></li>
                 `;
                 break;
+            case PanicError.SwfFetchError:
+                errorBody = `
+                    <p>Ruffle failed to load the Flash SWF file.</p>
+                    <p>The most likely reason is that the file no longer exists, so there is nothing for Ruffle to load.</p>
+                    <p>Try contacting the website administrator for help.</p>
+                `;
+                errorFooter = `
+                    <li><a href="#" id="panic-view-details">View Error Details</a></li>
+                `;
+                break;
             case PanicError.WasmCors:
                 // Self hosted: Cannot load `.wasm` file - CORS issues
                 errorBody = `
@@ -1068,6 +1088,17 @@ export class RufflePlayer extends HTMLElement {
                 `;
                 errorFooter = `
                     <li><a target="_top" href="https://github.com/ruffle-rs/ruffle/wiki/Using-Ruffle#addressing-a-compileerror">View Ruffle Wiki</a></li>
+                    <li><a href="#" id="panic-view-details">View Error Details</a></li>
+                `;
+                break;
+            case PanicError.WasmDownload:
+                // Usually a transient network error or botched deployment
+                errorBody = `
+                    <p>Ruffle has encountered a major issue whilst trying to initialize.</p>
+                    <p>This can often resolve itself, so you can try reloading the page.</p>
+                    <p>Otherwise, please contact the website administrator.</p>
+                `;
+                errorFooter = `
                     <li><a href="#" id="panic-view-details">View Error Details</a></li>
                 `;
                 break;
@@ -1134,6 +1165,31 @@ export class RufflePlayer extends HTMLElement {
         this.destroy();
     }
 
+    displayRootMovieDownloadFailedMessage(): void {
+        const swfUrl = new URL(this.swfUrl!);
+        if (
+            window.location.origin == swfUrl.origin ||
+            !this.isExtension ||
+            !window.location.protocol.includes("http")
+        ) {
+            const error = new Error("Failed to fetch: " + this.swfUrl);
+            error.ruffleIndexError = PanicError.SwfFetchError;
+            this.panic(error);
+            return;
+        }
+
+        const div = document.createElement("div");
+        div.id = "message_overlay";
+        div.innerHTML = `<div class="message">
+            <p>Ruffle wasn't able to run the Flash embedded in this page.</p>
+            <p>You can try to open the file in a separate tab, to sidestep this issue.</p>
+            <div>
+                <a target="_blank" href="${this.swfUrl}">Open in a new tab</a>
+            </div>
+        </div>`;
+        this.container.prepend(div);
+    }
+
     displayUnsupportedMessage(): void {
         const div = document.createElement("div");
         div.id = "message_overlay";
@@ -1143,7 +1199,7 @@ export class RufflePlayer extends HTMLElement {
             <p>Flash Player has been removed from browsers in 2021.</p>
             <p>This content is not yet supported by the Ruffle emulator and will likely not run as intended.</p>
             <div>
-                <a target="_top" class="more-info-link" href="https://github.com/ruffle-rs/ruffle/wiki/Frequently-Asked-Questions-For-Users">More info</a>
+                <a target="_blank" class="more-info-link" href="https://github.com/ruffle-rs/ruffle/wiki/Frequently-Asked-Questions-For-Users">More info</a>
                 <button id="run-anyway-btn">Run anyway</button>
             </div>
         </div>`;
@@ -1183,6 +1239,12 @@ export class RufflePlayer extends HTMLElement {
         // TODO: Switch this to ReadyState.Loading when we have streaming support.
         this._readyState = ReadyState.Loaded;
         this.dispatchEvent(new Event(RufflePlayer.LOADED_METADATA));
+        // TODO: Move this to whatever function changes the ReadyState to Loaded when we have streaming support.
+        this.dispatchEvent(new Event(RufflePlayer.LOADED_DATA));
+    }
+
+    setIsExtension(isExtension: boolean): void {
+        this.isExtension = isExtension;
     }
 }
 
@@ -1236,6 +1298,19 @@ export function isScriptAccessAllowed(
                 return false;
             }
     }
+}
+
+/**
+ * Returns whether a SWF file should show the built-in context menu items.
+ *
+ * @param menu The value of the `menu` attribute.
+ * @returns True if the built-in context items should be shown.
+ */
+export function isBuiltInContextMenuVisible(menu: string | null): boolean {
+    if (menu === "true" || menu === null) {
+        return true;
+    }
+    return false;
 }
 
 /**

@@ -57,25 +57,30 @@ const PROTO_DECLS: &[Declaration] = declare_properties! {
     "replaceSel" => method(tf_method!(replace_sel); DONT_ENUM | DONT_DELETE | READ_ONLY);
     "replaceText" => method(tf_method!(replace_text); DONT_ENUM | DONT_DELETE | READ_ONLY);
     "removeTextField" => method(tf_method!(remove_text_field); DONT_ENUM | DONT_DELETE | READ_ONLY);
-    "autoSize" => property(tf_getter!(auto_size), tf_setter!(set_auto_size));
-    "background" => property(tf_getter!(background), tf_setter!(set_background));
-    "backgroundColor" => property(tf_getter!(background_color), tf_setter!(set_background_color));
-    "border" => property(tf_getter!(border), tf_setter!(set_border));
-    "borderColor" => property(tf_getter!(border_color), tf_setter!(set_border_color));
-    "embedFonts" => property(tf_getter!(embed_fonts), tf_setter!(set_embed_fonts));
-    "html" => property(tf_getter!(html), tf_setter!(set_html));
-    "htmlText" => property(tf_getter!(html_text), tf_setter!(set_html_text));
-    "length" => property(tf_getter!(length));
-    "multiline" => property(tf_getter!(multiline), tf_setter!(set_multiline));
-    "selectable" => property(tf_getter!(selectable), tf_setter!(set_selectable));
-    "text" => property(tf_getter!(text), tf_setter!(set_text));
-    "textColor" => property(tf_getter!(text_color), tf_setter!(set_text_color));
-    "textHeight" => property(tf_getter!(text_height));
-    "textWidth" => property(tf_getter!(text_width));
-    "type" => property(tf_getter!(get_type), tf_setter!(set_type));
-    "variable" => property(tf_getter!(variable), tf_setter!(set_variable));
-    "wordWrap" => property(tf_getter!(word_wrap), tf_setter!(set_word_wrap));
-    "password" => property(tf_getter!(password), tf_setter!(set_password));
+    "autoSize" => property(tf_getter!(auto_size), tf_setter!(set_auto_size); DONT_DELETE);
+    "background" => property(tf_getter!(background), tf_setter!(set_background); DONT_DELETE);
+    "backgroundColor" => property(tf_getter!(background_color), tf_setter!(set_background_color); DONT_DELETE);
+    "border" => property(tf_getter!(border), tf_setter!(set_border); DONT_DELETE);
+    "borderColor" => property(tf_getter!(border_color), tf_setter!(set_border_color); DONT_DELETE);
+    "bottomScroll" => property(tf_getter!(bottom_scroll); DONT_DELETE | READ_ONLY);
+    "embedFonts" => property(tf_getter!(embed_fonts), tf_setter!(set_embed_fonts); DONT_DELETE);
+    "hscroll" => property(tf_getter!(hscroll), tf_setter!(set_hscroll); DONT_DELETE);
+    "html" => property(tf_getter!(html), tf_setter!(set_html); DONT_DELETE);
+    "htmlText" => property(tf_getter!(html_text), tf_setter!(set_html_text); DONT_DELETE);
+    "length" => property(tf_getter!(length); DONT_DELETE | READ_ONLY);
+    "maxhscroll" => property(tf_getter!(maxhscroll); DONT_DELETE | READ_ONLY);
+    "maxscroll" => property(tf_getter!(maxscroll); DONT_DELETE | READ_ONLY);
+    "multiline" => property(tf_getter!(multiline), tf_setter!(set_multiline); DONT_DELETE);
+    "password" => property(tf_getter!(password), tf_setter!(set_password); DONT_DELETE);
+    "scroll" => property(tf_getter!(scroll), tf_setter!(set_scroll); DONT_DELETE);
+    "selectable" => property(tf_getter!(selectable), tf_setter!(set_selectable); DONT_DELETE);
+    "text" => property(tf_getter!(text), tf_setter!(set_text); DONT_DELETE);
+    "textColor" => property(tf_getter!(text_color), tf_setter!(set_text_color); DONT_DELETE);
+    "textHeight" => property(tf_getter!(text_height); DONT_DELETE);
+    "textWidth" => property(tf_getter!(text_width); DONT_DELETE);
+    "type" => property(tf_getter!(get_type), tf_setter!(set_type); DONT_DELETE);
+    "variable" => property(tf_getter!(variable), tf_setter!(set_variable); DONT_DELETE);
+    "wordWrap" => property(tf_getter!(word_wrap), tf_setter!(set_word_wrap); DONT_DELETE);
 };
 
 /// Implements `TextField`
@@ -588,4 +593,61 @@ pub fn set_type<'gc>(
         value => log::warn!("Invalid TextField.type: {}", value),
     };
     Ok(())
+}
+
+pub fn hscroll<'gc>(
+    this: EditText<'gc>,
+    _activation: &mut Activation<'_, 'gc, '_>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    Ok(this.hscroll().into())
+}
+
+pub fn set_hscroll<'gc>(
+    this: EditText<'gc>,
+    activation: &mut Activation<'_, 'gc, '_>,
+    value: Value<'gc>,
+) -> Result<(), Error<'gc>> {
+    // SWF v8 and earlier has the simple clamping behaviour below. SWF v9+ is much more complicated. See #4634.
+    let hscroll_pixels = value.coerce_to_i32(activation)? as f64;
+    let clamped = hscroll_pixels.clamp(0.0, this.maxhscroll());
+    this.set_hscroll(clamped, &mut activation.context);
+    Ok(())
+}
+
+pub fn maxhscroll<'gc>(
+    this: EditText<'gc>,
+    _activation: &mut Activation<'_, 'gc, '_>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    Ok(this.maxhscroll().into())
+}
+
+pub fn scroll<'gc>(
+    this: EditText<'gc>,
+    _activation: &mut Activation<'_, 'gc, '_>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    Ok(this.scroll().into())
+}
+
+pub fn set_scroll<'gc>(
+    this: EditText<'gc>,
+    activation: &mut Activation<'_, 'gc, '_>,
+    value: Value<'gc>,
+) -> Result<(), Error<'gc>> {
+    let input = value.coerce_to_f64(activation)?;
+    this.set_scroll(input, &mut activation.context);
+    Ok(())
+}
+
+pub fn maxscroll<'gc>(
+    this: EditText<'gc>,
+    _activation: &mut Activation<'_, 'gc, '_>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    Ok(this.maxscroll().into())
+}
+
+pub fn bottom_scroll<'gc>(
+    this: EditText<'gc>,
+    _activation: &mut Activation<'_, 'gc, '_>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    Ok(this.bottom_scroll().into())
 }

@@ -3,12 +3,8 @@
 const path = require("path");
 const CopyPlugin = require("copy-webpack-plugin");
 
-module.exports = (env, argv) => {
-    let mode = "production";
-    if (argv && argv.mode) {
-        mode = argv.mode;
-    }
-
+module.exports = (_env, _argv) => {
+    const mode = process.env.NODE_ENV || "production";
     console.log(`Building ${mode}...`);
 
     return {
@@ -25,10 +21,6 @@ module.exports = (env, argv) => {
                 {
                     test: /\.css$/i,
                     use: ["style-loader", "css-loader"],
-                },
-                {
-                    test: /\.wasm$/i,
-                    type: "asset/resource",
                 },
             ],
         },

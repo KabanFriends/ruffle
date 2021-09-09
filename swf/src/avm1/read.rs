@@ -1,12 +1,10 @@
-#![allow(clippy::unreadable_literal)]
-
 use crate::avm1::{opcode::OpCode, types::*};
 use crate::error::{Error, Result};
 use crate::extensions::ReadSwfExt;
 
-#[allow(dead_code)]
 pub struct Reader<'a> {
     input: &'a [u8],
+    #[allow(dead_code)]
     version: u8,
 }
 
@@ -44,31 +42,39 @@ impl<'a> Reader<'a> {
     }
 
     #[inline]
+    fn read_f64_me(&mut self) -> Result<f64> {
+        // Flash weirdly stores (some?) f64 as two LE 32-bit chunks.
+        // First word is the hi-word, second word is the lo-word.
+        Ok(f64::from_bits(self.read_u64()?.rotate_left(32)))
+    }
+
+    #[inline]
     pub fn read_action(&mut self) -> Result<Option<Action<'a>>> {
         let (opcode, mut length) = self.read_opcode_and_length()?;
         let start = self.input;
 
         let action = self.read_op(opcode, &mut length);
 
-        let end_pos = (start.as_ptr() as usize + length) as *const u8;
         if let Err(e) = action {
             return Err(Error::avm1_parse_error_with_source(opcode, e));
         }
 
         // Verify that we parsed the correct amount of data.
+        let end_pos = (start.as_ptr() as usize + length) as *const u8;
         if self.input.as_ptr() != end_pos {
-            self.input = &start[length.min(start.len())..];
             // We incorrectly parsed this action.
             // Re-sync to the expected end of the action and throw an error.
-            return Err(Error::avm1_parse_error(opcode));
+            self.input = &start[length.min(start.len())..];
+            log::warn!("Length mismatch in AVM1 action: {}", OpCode::format(opcode));
         }
+
         action
     }
 
     pub fn read_opcode_and_length(&mut self) -> Result<(u8, usize)> {
         let opcode = self.read_u8()?;
         let length = if opcode >= 0x80 {
-            self.read_u16()? as usize
+            self.read_u16()?.into()
         } else {
             0
         };
@@ -81,9 +87,7 @@ impl<'a> Reader<'a> {
     /// The `length` passed in should be the length excluding any sub-blocks.
     /// The final `length` returned will be total length of the action, including sub-blocks.
     #[inline]
-    #[allow(clippy::inconsistent_digit_grouping)]
     fn read_op(&mut self, opcode: u8, length: &mut usize) -> Result<Option<Action<'a>>> {
-        use num_traits::FromPrimitive;
         let action = if let Some(op) = OpCode::from_u8(opcode) {
             match op {
                 OpCode::End => return Ok(None),
@@ -105,8 +109,9 @@ impl<'a> Reader<'a> {
                 OpCode::CharToAscii => Action::CharToAscii,
                 OpCode::CloneSprite => Action::CloneSprite,
                 OpCode::ConstantPool => {
-                    let mut constants = vec![];
-                    for _ in 0..self.read_u16()? {
+                    let count = self.read_u16()?;
+                    let mut constants = Vec::with_capacity(count as usize);
+                    for _ in 0..count {
                         constants.push(self.read_str()?);
                     }
                     Action::ConstantPool(constants)
@@ -232,7 +237,7 @@ impl<'a> Reader<'a> {
                     num_actions_to_skip: self.read_u8()?,
                 },
                 OpCode::With => {
-                    let code_length = usize::from(self.read_u16()?);
+                    let code_length: usize = (self.read_u16()?).into();
                     *length += code_length;
                     Action::With {
                         actions: self.read_slice(code_length)?,
@@ -290,7 +295,7 @@ impl<'a> Reader<'a> {
             params.push(self.read_str()?);
         }
         // code_length isn't included in the DefineFunction's action length.
-        let code_length = usize::from(self.read_u16()?);
+        let code_length: usize = (self.read_u16()?).into();
         *action_length += code_length;
         Ok(Action::DefineFunction {
             name,
@@ -313,7 +318,7 @@ impl<'a> Reader<'a> {
             });
         }
         // code_length isn't included in the DefineFunction's length.
-        let code_length = usize::from(self.read_u16()?);
+        let code_length: usize = (self.read_u16()?).into();
         *action_length += code_length;
         Ok(Action::DefineFunction2(Function {
             name,
@@ -326,9 +331,9 @@ impl<'a> Reader<'a> {
 
     fn read_try(&mut self, length: &mut usize) -> Result<Action<'a>> {
         let flags = self.read_u8()?;
-        let try_length = usize::from(self.read_u16()?);
-        let catch_length = usize::from(self.read_u16()?);
-        let finally_length = usize::from(self.read_u16()?);
+        let try_length: usize = (self.read_u16()?).into();
+        let catch_length: usize = (self.read_u16()?).into();
+        let finally_length: usize = (self.read_u16()?).into();
         *length += try_length + catch_length + finally_length;
         let catch_var = if flags & 0b100 == 0 {
             CatchVar::Var(self.read_str()?)
@@ -426,5 +431,27 @@ pub mod tests {
         let mut reader = Reader::new(&action_bytes[..], 5);
         let action = reader.read_action().unwrap().unwrap();
         assert_eq!(action, Action::Push(vec![Value::Null, Value::Undefined]));
+    }
+
+    #[test]
+    fn read_length_mismatch() {
+        let action_bytes = [
+            OpCode::ConstantPool as u8,
+            5,
+            0,
+            1,
+            0,
+            b'a',
+            0,
+            OpCode::Add as u8,
+            OpCode::Subtract as u8,
+        ];
+        let mut reader = Reader::new(&action_bytes[..], 5);
+
+        let action = reader.read_action().unwrap().unwrap();
+        assert_eq!(action, Action::ConstantPool(vec!["a".into()]));
+
+        let action = reader.read_action().unwrap().unwrap();
+        assert_eq!(action, Action::Subtract);
     }
 }

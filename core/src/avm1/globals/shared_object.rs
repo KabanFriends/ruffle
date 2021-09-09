@@ -64,45 +64,31 @@ fn serialize_value<'gc>(
         Value::Number(f) => Some(AmfValue::Number(f)),
         Value::String(s) => Some(AmfValue::String(s.to_string())),
         Value::Object(o) => {
-            // Don't attempt to serialize functions
-            let function = activation.context.avm1.prototypes.function;
-            let array = activation.context.avm1.prototypes.array;
-            let xml = activation.context.avm1.prototypes.xml_node;
-            let date = activation.context.avm1.prototypes.date;
-
-            if !o
-                .is_instance_of(activation, o, function)
-                .unwrap_or_default()
-            {
-                if o.is_instance_of(activation, o, array).unwrap_or_default() {
-                    let mut values = Vec::new();
-                    recursive_serialize(activation, o, &mut values);
-
-                    // TODO: What happens if an exception is thrown here?
-                    let length = o.length(activation).unwrap();
-                    Some(AmfValue::ECMAArray(vec![], values, length as u32))
-                } else if o.is_instance_of(activation, o, xml).unwrap_or_default() {
-                    o.as_xml_node().and_then(|xml_node| {
-                        xml_node
-                            .into_string(&mut |_| true)
-                            .map(|xml_string| AmfValue::XML(xml_string, true))
-                            .ok()
-                    })
-                } else if o.is_instance_of(activation, o, date).unwrap_or_default() {
-                    o.as_date_object()
-                        .and_then(|date_obj| {
-                            date_obj
-                                .date_time()
-                                .map(|date_time| date_time.timestamp_millis())
-                        })
-                        .map(|millis| AmfValue::Date(millis as f64, None))
-                } else {
-                    let mut object_body = Vec::new();
-                    recursive_serialize(activation, o, &mut object_body);
-                    Some(AmfValue::Object(object_body, None))
-                }
-            } else {
+            // TODO: Find a more general rule for which object types should be skipped,
+            // and which turn into undefined.
+            if o.as_executable().is_some() {
                 None
+            } else if o.as_display_object().is_some() {
+                Some(AmfValue::Undefined)
+            } else if o.as_array_object().is_some() {
+                let mut values = Vec::new();
+                recursive_serialize(activation, o, &mut values);
+
+                // TODO: What happens if an exception is thrown here?
+                let length = o.length(activation).unwrap();
+                Some(AmfValue::ECMAArray(vec![], values, length as u32))
+            } else if let Some(xml_node) = o.as_xml_node() {
+                xml_node
+                    .into_string(&mut |_| true)
+                    .map(|xml_string| AmfValue::XML(xml_string, true))
+                    .ok()
+            } else if let Some(date) = o.as_date_object() {
+                date.date_time()
+                    .map(|date_time| AmfValue::Date(date_time.timestamp_millis() as f64, None))
+            } else {
+                let mut object_body = Vec::new();
+                recursive_serialize(activation, o, &mut object_body);
+                Some(AmfValue::Object(object_body, None))
             }
         }
     }
@@ -129,19 +115,19 @@ fn deserialize_value<'gc>(activation: &mut Activation<'_, 'gc, '_>, val: &AmfVal
     match val {
         AmfValue::Null => Value::Null,
         AmfValue::Undefined => Value::Undefined,
-        AmfValue::Number(f) => Value::Number(*f),
+        AmfValue::Number(f) => (*f).into(),
         AmfValue::String(s) => Value::String(AvmString::new(activation.context.gc_context, s)),
-        AmfValue::Bool(b) => Value::Bool(*b),
+        AmfValue::Bool(b) => (*b).into(),
         AmfValue::ECMAArray(_, associative, len) => {
             let array_constructor = activation.context.avm1.prototypes.array_constructor;
             if let Ok(Value::Object(obj)) =
-                array_constructor.construct(activation, &[Value::Number(*len as f64)])
+                array_constructor.construct(activation, &[(*len).into()])
             {
                 for entry in associative {
                     let value = deserialize_value(activation, entry.value());
 
                     if let Ok(i) = entry.name().parse::<i32>() {
-                        let _ = obj.set_element(activation, i, value);
+                        obj.set_element(activation, i, value).unwrap();
                     } else {
                         obj.define_value(
                             activation.context.gc_context,
@@ -177,9 +163,7 @@ fn deserialize_value<'gc>(activation: &mut Activation<'_, 'gc, '_>, val: &AmfVal
         AmfValue::Date(time, _) => {
             let date_proto = activation.context.avm1.prototypes.date_constructor;
 
-            if let Ok(Value::Object(obj)) =
-                date_proto.construct(activation, &[Value::Number(*time)])
-            {
+            if let Ok(Value::Object(obj)) = date_proto.construct(activation, &[(*time).into()]) {
                 Value::Object(obj)
             } else {
                 Value::Undefined
@@ -239,7 +223,7 @@ fn recursive_deserialize_json<'gc>(
         }
         JsonValue::String(s) => Value::String(AvmString::new(activation.context.gc_context, s)),
         JsonValue::Number(f) => Value::Number(f.into()),
-        JsonValue::Boolean(b) => Value::Bool(b),
+        JsonValue::Boolean(b) => b.into(),
         JsonValue::Object(o) => {
             if o.get("__proto__").and_then(JsonValue::as_str) == Some("Array") {
                 deserialize_array_json(o, activation)
@@ -291,7 +275,7 @@ fn deserialize_array_json<'gc>(
         for entry in json_obj.iter() {
             let value = recursive_deserialize_json(entry.1.clone(), activation);
             if let Ok(i) = entry.0.parse::<i32>() {
-                let _ = obj.set_element(activation, i, value);
+                obj.set_element(activation, i, value).unwrap();
             } else {
                 obj.define_value(
                     activation.context.gc_context,
@@ -416,7 +400,7 @@ pub fn get_local<'gc>(
 
     // Check if this is referencing an existing shared object
     if let Some(so) = activation.context.shared_objects.get(&full_name) {
-        return Ok(Value::Object(*so));
+        return Ok((*so).into());
     }
 
     // Data property only should exist when created with getLocal/Remote

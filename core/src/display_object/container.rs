@@ -215,7 +215,7 @@ pub trait TDisplayObjectContainer<'gc>:
     /// Any child already at the desired position will move back to the new
     /// child's former position. The render list positions of each child will
     /// also be swapped. If no child has been displaced by the swap operation,
-    // then the render list position of the child will be determined in the same
+    /// then the render list position of the child will be determined in the same
     /// way as `replace_at_depth`.
     fn swap_at_depth(
         &mut self,
@@ -441,8 +441,8 @@ macro_rules! impl_display_object_container {
             depth: Depth,
         ) {
             // Verify this is actually our child.
-            // TODO: This seems unnecessary (especially since AS3 movieclips
-            // are allowed to be used in ways that would trip this assert)
+            // TODO: This seems unnecessary (especially since AS3 MovieClips
+            // are allowed to be used in ways that would trip this assert).
             debug_assert!(DisplayObject::ptr_eq(
                 child.parent().unwrap(),
                 (*self).into()
@@ -641,7 +641,7 @@ impl<'gc> Default for ChildContainer<'gc> {
 
 impl<'gc> ChildContainer<'gc> {
     pub fn new() -> Self {
-        ChildContainer {
+        Self {
             render_list: Vec::new(),
             depth_list: BTreeMap::new(),
         }
@@ -921,7 +921,7 @@ impl<'gc> RenderIter<'gc> {
 impl<'gc> Iterator for RenderIter<'gc> {
     type Item = DisplayObject<'gc>;
 
-    fn next(&mut self) -> Option<DisplayObject<'gc>> {
+    fn next(&mut self) -> Option<Self::Item> {
         if self.i == self.neg_i {
             return None;
         }

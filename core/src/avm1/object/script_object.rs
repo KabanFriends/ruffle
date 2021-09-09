@@ -12,13 +12,6 @@ pub const TYPE_OF_OBJECT: &str = "object";
 
 #[derive(Debug, Clone, Collect)]
 #[collect(no_drop)]
-pub enum ArrayStorage<'gc> {
-    Vector(Vec<Value<'gc>>),
-    Properties { length: i32 },
-}
-
-#[derive(Debug, Clone, Collect)]
-#[collect(no_drop)]
 pub struct Watcher<'gc> {
     callback: Object<'gc>,
     user_data: Value<'gc>,
@@ -32,7 +25,6 @@ impl<'gc> Watcher<'gc> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn call(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
@@ -74,59 +66,40 @@ pub struct ScriptObject<'gc>(GcCell<'gc, ScriptObjectData<'gc>>);
 #[derive(Collect)]
 #[collect(no_drop)]
 pub struct ScriptObjectData<'gc> {
-    prototype: Value<'gc>,
-    values: PropertyMap<Property<'gc>>,
+    properties: PropertyMap<Property<'gc>>,
     interfaces: Vec<Object<'gc>>,
     type_of: &'static str,
-    array: ArrayStorage<'gc>,
     watchers: PropertyMap<Watcher<'gc>>,
 }
 
 impl fmt::Debug for ScriptObjectData<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Object")
-            .field("prototype", &self.prototype)
-            .field("values", &self.values)
-            .field("array", &self.array)
+            .field("properties", &self.properties)
             .field("watchers", &self.watchers)
             .finish()
     }
 }
 
 impl<'gc> ScriptObject<'gc> {
-    pub fn object(
-        gc_context: MutationContext<'gc, '_>,
-        proto: Option<Object<'gc>>,
-    ) -> ScriptObject<'gc> {
-        ScriptObject(GcCell::allocate(
+    pub fn object(gc_context: MutationContext<'gc, '_>, proto: Option<Object<'gc>>) -> Self {
+        let object = Self(GcCell::allocate(
             gc_context,
             ScriptObjectData {
-                prototype: proto.map_or(Value::Undefined, Value::Object),
                 type_of: TYPE_OF_OBJECT,
-                values: PropertyMap::new(),
-                array: ArrayStorage::Properties { length: 0 },
-                interfaces: vec![],
-                watchers: PropertyMap::new(),
-            },
-        ))
-    }
-
-    pub fn array(
-        gc_context: MutationContext<'gc, '_>,
-        proto: Option<Object<'gc>>,
-    ) -> ScriptObject<'gc> {
-        let object = ScriptObject(GcCell::allocate(
-            gc_context,
-            ScriptObjectData {
-                prototype: proto.map_or(Value::Undefined, Value::Object),
-                type_of: TYPE_OF_OBJECT,
-                values: PropertyMap::new(),
-                array: ArrayStorage::Vector(Vec::new()),
+                properties: PropertyMap::new(),
                 interfaces: vec![],
                 watchers: PropertyMap::new(),
             },
         ));
-        object.sync_native_property("length", gc_context, Some(0.into()), false);
+        if let Some(proto) = proto {
+            object.define_value(
+                gc_context,
+                "__proto__",
+                proto.into(),
+                Attribute::DONT_ENUM | Attribute::DONT_DELETE,
+            );
+        }
         object
     }
 
@@ -135,124 +108,70 @@ impl<'gc> ScriptObject<'gc> {
         gc_context: MutationContext<'gc, '_>,
         proto: Option<Object<'gc>>,
     ) -> Object<'gc> {
-        ScriptObject(GcCell::allocate(
-            gc_context,
-            ScriptObjectData {
-                prototype: proto.map_or(Value::Undefined, Value::Object),
-                type_of: TYPE_OF_OBJECT,
-                values: PropertyMap::new(),
-                array: ArrayStorage::Properties { length: 0 },
-                interfaces: vec![],
-                watchers: PropertyMap::new(),
-            },
-        ))
-        .into()
+        Self::object(gc_context, proto).into()
     }
 
-    /// Constructs an object with no values, not even builtins.
+    /// Constructs an object with no properties, not even builtins.
     ///
     /// Intended for constructing scope chains, since they exclusively use the
-    /// object values, but can't just have a hashmap because of `with` and
+    /// object properties, but can't just have a hashmap because of `with` and
     /// friends.
     pub fn bare_object(gc_context: MutationContext<'gc, '_>) -> Self {
-        ScriptObject(GcCell::allocate(
-            gc_context,
-            ScriptObjectData {
-                prototype: Value::Undefined,
-                type_of: TYPE_OF_OBJECT,
-                values: PropertyMap::new(),
-                array: ArrayStorage::Properties { length: 0 },
-                interfaces: vec![],
-                watchers: PropertyMap::new(),
-            },
-        ))
+        Self::object(gc_context, None)
     }
 
     pub fn set_type_of(&mut self, gc_context: MutationContext<'gc, '_>, type_of: &'static str) {
         self.0.write(gc_context).type_of = type_of;
     }
 
-    #[allow(clippy::trivially_copy_pass_by_ref)]
-    pub fn sync_native_property(
+    /// Gets the value of a data property on this object.
+    ///
+    /// Doesn't look up the prototype chain and ignores virtual properties, thus cannot cause
+    /// any side-effects.
+    pub fn get_data(&self, name: &str, activation: &mut Activation<'_, 'gc, '_>) -> Value<'gc> {
+        self.0
+            .read()
+            .properties
+            .get(name, activation.is_case_sensitive())
+            .map_or(Value::Undefined, |property| property.data())
+    }
+
+    /// Sets a data property on this object.
+    ///
+    /// Doesn't look up the prototype chain and ignores virtual properties, but still might
+    /// call to watchers.
+    pub fn set_data(
         &self,
         name: &str,
-        gc_context: MutationContext<'gc, '_>,
-        native_value: Option<Value<'gc>>,
-        is_enumerable: bool,
-    ) {
-        match self.0.write(gc_context).values.entry(name, false) {
-            Entry::Occupied(mut entry) => {
-                if let Property::Stored { value, .. } = entry.get_mut() {
-                    match native_value {
-                        None => {
-                            entry.remove_entry();
-                        }
-                        Some(native_value) => {
-                            *value = native_value;
-                        }
-                    }
-                }
-            }
-            Entry::Vacant(entry) => {
-                if let Some(native_value) = native_value {
-                    entry.insert(Property::Stored {
-                        value: native_value,
-                        attributes: if is_enumerable {
-                            Attribute::empty()
-                        } else {
-                            Attribute::DONT_ENUM
-                        },
-                    });
-                }
-            }
+        value: Value<'gc>,
+        activation: &mut Activation<'_, 'gc, '_>,
+    ) -> Result<(), Error<'gc>> {
+        // TODO: Call watchers.
+        match self
+            .0
+            .write(activation.context.gc_context)
+            .properties
+            .entry(name, activation.is_case_sensitive())
+        {
+            Entry::Occupied(mut entry) => entry.get_mut().set_data(value),
+            Entry::Vacant(entry) => entry.insert(Property::new_stored(value, Attribute::empty())),
         }
+        Ok(())
     }
 }
 
 impl<'gc> TObject<'gc> for ScriptObject<'gc> {
-    /// Get the value of a particular property on this object.
-    ///
-    /// The `avm`, `context`, and `this` parameters exist so that this object
-    /// can call virtual properties. Furthermore, since some virtual properties
-    /// may resolve on the AVM stack, this function may return `None` instead
-    /// of a `Value`. *This is not equivalent to `undefined`.* Instead, it is a
-    /// signal that your value will be returned on the ActionScript stack, and
-    /// that you should register a stack continuation in order to get it.
-    fn get_local(
+    /// Get the value of a particular non-virtual property on this object.
+    fn get_local_stored(
         &self,
         name: &str,
         activation: &mut Activation<'_, 'gc, '_>,
-        this: Object<'gc>,
-    ) -> Option<Result<Value<'gc>, Error<'gc>>> {
-        let getter = match self
-            .0
+    ) -> Option<Value<'gc>> {
+        self.0
             .read()
-            .values
+            .properties
             .get(name, activation.is_case_sensitive())
-        {
-            Some(Property::Virtual { get, .. }) => get.to_owned(),
-            Some(Property::Stored { value, .. }) => return Some(Ok(value.to_owned())),
-            None => return None,
-        };
-
-        if let Some(exec) = getter.as_executable() {
-            let result = exec.exec(
-                "[Getter]",
-                activation,
-                this,
-                Some((*self).into()),
-                &[],
-                ExecutionReason::Special,
-                getter,
-            );
-            Some(match result {
-                Ok(v) => Ok(v),
-                Err(Error::ThrownValue(e)) => Err(Error::ThrownValue(e)),
-                Err(_) => Ok(Value::Undefined),
-            })
-        } else {
-            None
-        }
+            .map(|property| property.data())
     }
 
     /// Set a named property on the object.
@@ -263,42 +182,24 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
     fn set_local(
         &self,
         name: &str,
-        mut value: Value<'gc>,
+        value: Value<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
         this: Object<'gc>,
         base_proto: Option<Object<'gc>>,
     ) -> Result<(), Error<'gc>> {
-        let watcher = self
-            .0
-            .read()
-            .watchers
-            .get(name, activation.is_case_sensitive())
-            .cloned();
-        let mut result = Ok(());
-        if let Some(watcher) = watcher {
-            let old_value = self.get(name, activation)?;
-            match watcher.call(activation, name, old_value, value, this, base_proto) {
-                Ok(v) => value = v,
-                Err(Error::ThrownValue(e)) => {
-                    value = Value::Undefined;
-                    result = Err(Error::ThrownValue(e));
-                }
-                Err(_) => value = Value::Undefined,
-            };
-        }
-
         let setter = match self
             .0
             .write(activation.context.gc_context)
-            .values
+            .properties
             .entry(name, activation.is_case_sensitive())
         {
-            Entry::Occupied(mut entry) => entry.get_mut().set(value),
+            Entry::Occupied(mut entry) => {
+                let entry = entry.get_mut();
+                entry.set_data(value);
+                entry.setter()
+            }
             Entry::Vacant(entry) => {
-                entry.insert(Property::Stored {
-                    value,
-                    attributes: Attribute::empty(),
-                });
+                entry.insert(Property::new_stored(value, Attribute::empty()));
                 None
             }
         };
@@ -319,7 +220,7 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
             }
         }
 
-        result
+        Ok(())
     }
 
     /// Call the underlying object.
@@ -338,21 +239,20 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         Ok(Value::Undefined)
     }
 
-    fn call_setter(
-        &self,
-        name: &str,
-        value: Value<'gc>,
-        activation: &mut Activation<'_, 'gc, '_>,
-    ) -> Option<Object<'gc>> {
-        match self
-            .0
-            .write(activation.context.gc_context)
-            .values
-            .get_mut(name, activation.is_case_sensitive())
-        {
-            Some(propref) if propref.is_virtual() => propref.set(value),
-            _ => None,
-        }
+    fn getter(&self, name: &str, activation: &mut Activation<'_, 'gc, '_>) -> Option<Object<'gc>> {
+        self.0
+            .read()
+            .properties
+            .get(name, activation.is_case_sensitive())
+            .and_then(|property| property.getter())
+    }
+
+    fn setter(&self, name: &str, activation: &mut Activation<'_, 'gc, '_>) -> Option<Object<'gc>> {
+        self.0
+            .read()
+            .properties
+            .get(name, activation.is_case_sensitive())
+            .and_then(|property| property.setter())
     }
 
     fn create_bare_object(
@@ -360,28 +260,24 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         activation: &mut Activation<'_, 'gc, '_>,
         this: Object<'gc>,
     ) -> Result<Object<'gc>, Error<'gc>> {
-        match self.0.read().array {
-            ArrayStorage::Vector(_) => {
-                Ok(ScriptObject::array(activation.context.gc_context, Some(this)).into())
-            }
-            ArrayStorage::Properties { .. } => {
-                Ok(ScriptObject::object(activation.context.gc_context, Some(this)).into())
-            }
-        }
+        Ok(ScriptObject::object(activation.context.gc_context, Some(this)).into())
     }
 
     /// Delete a named property from the object.
     ///
     /// Returns false if the property cannot be deleted.
     fn delete(&self, activation: &mut Activation<'_, 'gc, '_>, name: &str) -> bool {
-        let mut object = self.0.write(activation.context.gc_context);
-        if let Some(prop) = object.values.get(name, activation.is_case_sensitive()) {
-            if prop.can_delete() {
-                object.values.remove(name, activation.is_case_sensitive());
+        if let Entry::Occupied(mut entry) = self
+            .0
+            .write(activation.context.gc_context)
+            .properties
+            .entry(name, activation.is_case_sensitive())
+        {
+            if entry.get().can_delete() {
+                entry.remove_entry();
                 return true;
             }
         }
-
         false
     }
 
@@ -389,41 +285,65 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         &self,
         gc_context: MutationContext<'gc, '_>,
         name: &str,
-        get: Object<'gc>,
-        set: Option<Object<'gc>>,
+        getter: Object<'gc>,
+        setter: Option<Object<'gc>>,
         attributes: Attribute,
     ) {
-        self.0.write(gc_context).values.insert(
-            name,
-            Property::Virtual {
-                get,
-                set,
-                attributes,
-            },
-            false,
-        );
+        match self.0.write(gc_context).properties.entry(name, false) {
+            Entry::Occupied(mut entry) => entry.get_mut().set_virtual(getter, setter),
+            Entry::Vacant(entry) => entry.insert(Property::new_virtual(getter, setter, attributes)),
+        }
     }
 
     fn add_property_with_case(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
         name: &str,
-        get: Object<'gc>,
-        set: Option<Object<'gc>>,
+        getter: Object<'gc>,
+        setter: Option<Object<'gc>>,
         attributes: Attribute,
     ) {
-        self.0.write(activation.context.gc_context).values.insert(
-            name,
-            Property::Virtual {
-                get,
-                set,
-                attributes,
-            },
-            activation.is_case_sensitive(),
-        );
+        match self
+            .0
+            .write(activation.context.gc_context)
+            .properties
+            .entry(name, activation.is_case_sensitive())
+        {
+            Entry::Occupied(mut entry) => entry.get_mut().set_virtual(getter, setter),
+            Entry::Vacant(entry) => entry.insert(Property::new_virtual(getter, setter, attributes)),
+        }
     }
 
-    fn set_watcher(
+    fn call_watcher(
+        &self,
+        activation: &mut Activation<'_, 'gc, '_>,
+        name: &str,
+        value: &mut Value<'gc>,
+    ) -> Result<(), Error<'gc>> {
+        let mut result = Ok(());
+        let watcher = self
+            .0
+            .read()
+            .watchers
+            .get(name, activation.is_case_sensitive())
+            .cloned();
+        if let Some(watcher) = watcher {
+            let old_value = self.get_stored(name, activation)?;
+            let this = (*self).into();
+            match watcher.call(activation, name, old_value, *value, this, Some(this)) {
+                Ok(v) => *value = v,
+                Err(Error::ThrownValue(e)) => {
+                    *value = Value::Undefined;
+                    result = Err(Error::ThrownValue(e));
+                }
+                Err(_) => *value = Value::Undefined,
+            };
+        }
+
+        result
+    }
+
+    fn watch(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
         name: Cow<str>,
@@ -437,13 +357,12 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         );
     }
 
-    fn remove_watcher(&self, activation: &mut Activation<'_, 'gc, '_>, name: Cow<str>) -> bool {
-        let old = self
-            .0
+    fn unwatch(&self, activation: &mut Activation<'_, 'gc, '_>, name: Cow<str>) -> bool {
+        self.0
             .write(activation.context.gc_context)
             .watchers
-            .remove(name.as_ref(), activation.is_case_sensitive());
-        old.is_some()
+            .remove(name.as_ref(), activation.is_case_sensitive())
+            .is_some()
     }
 
     fn define_value(
@@ -453,10 +372,11 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         value: Value<'gc>,
         attributes: Attribute,
     ) {
-        self.0
-            .write(gc_context)
-            .values
-            .insert(name, Property::Stored { value, attributes }, true);
+        self.0.write(gc_context).properties.insert(
+            name,
+            Property::new_stored(value, attributes),
+            true,
+        );
     }
 
     fn set_attributes(
@@ -469,13 +389,13 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         match name {
             None => {
                 // Change *all* attributes.
-                for (_name, prop) in self.0.write(gc_context).values.iter_mut() {
+                for (_name, prop) in self.0.write(gc_context).properties.iter_mut() {
                     let new_atts = (prop.attributes() - clear_attributes) | set_attributes;
                     prop.set_attributes(new_atts);
                 }
             }
             Some(name) => {
-                if let Some(prop) = self.0.write(gc_context).values.get_mut(name, false) {
+                if let Some(prop) = self.0.write(gc_context).properties.get_mut(name, false) {
                     let new_atts = (prop.attributes() - clear_attributes) | set_attributes;
                     prop.set_attributes(new_atts);
                 }
@@ -483,18 +403,14 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         }
     }
 
-    fn proto(&self) -> Value<'gc> {
-        self.0.read().prototype
-    }
-
-    fn set_proto(&self, gc_context: MutationContext<'gc, '_>, prototype: Value<'gc>) {
-        self.0.write(gc_context).prototype = prototype;
+    fn proto(&self, activation: &mut Activation<'_, 'gc, '_>) -> Value<'gc> {
+        self.get_data("__proto__", activation)
     }
 
     /// Checks if the object has a given named property.
     fn has_property(&self, activation: &mut Activation<'_, 'gc, '_>, name: &str) -> bool {
         self.has_own_property(activation, name)
-            || if let Value::Object(proto) = self.proto() {
+            || if let Value::Object(proto) = self.proto(activation) {
                 proto.has_property(activation, name)
             } else {
                 false
@@ -504,61 +420,47 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
     /// Checks if the object has a given named property on itself (and not,
     /// say, the object's prototype or superclass)
     fn has_own_property(&self, activation: &mut Activation<'_, 'gc, '_>, name: &str) -> bool {
-        if name == "__proto__" {
-            return true;
-        }
         self.0
             .read()
-            .values
+            .properties
             .contains_key(name, activation.is_case_sensitive())
     }
 
     fn has_own_virtual(&self, activation: &mut Activation<'_, 'gc, '_>, name: &str) -> bool {
-        if let Some(slot) = self
-            .0
+        self.0
             .read()
-            .values
+            .properties
             .get(name, activation.is_case_sensitive())
-        {
-            slot.is_virtual()
-        } else {
-            false
-        }
+            .map_or(false, |property| property.is_virtual())
     }
 
     /// Checks if a named property appears when enumerating the object.
     fn is_property_enumerable(&self, activation: &mut Activation<'_, 'gc, '_>, name: &str) -> bool {
-        if let Some(prop) = self
-            .0
+        self.0
             .read()
-            .values
+            .properties
             .get(name, activation.is_case_sensitive())
-        {
-            prop.is_enumerable()
-        } else {
-            false
-        }
+            .map_or(false, |property| property.is_enumerable())
     }
 
     /// Enumerate the object.
     fn get_keys(&self, activation: &mut Activation<'_, 'gc, '_>) -> Vec<String> {
-        let proto_keys = if let Value::Object(proto) = self.proto() {
+        let proto_keys = if let Value::Object(proto) = self.proto(activation) {
             proto.get_keys(activation)
         } else {
             Vec::new()
         };
         let mut out_keys = vec![];
-        let object = self.0.read();
 
         // Prototype keys come first.
-        out_keys.extend(proto_keys.into_iter().filter(|k| {
-            !object
-                .values
-                .contains_key(k, activation.is_case_sensitive())
-        }));
+        out_keys.extend(
+            proto_keys
+                .into_iter()
+                .filter(|k| !self.has_own_property(activation, k)),
+        );
 
         // Then our own keys.
-        out_keys.extend(self.0.read().values.iter().filter_map(move |(k, p)| {
+        out_keys.extend(self.0.read().properties.iter().filter_map(move |(k, p)| {
             if p.is_enumerable() {
                 Some(k.to_string())
             } else {
@@ -589,11 +491,9 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         self.0.as_ptr() as *const ObjectPtr
     }
 
-    fn length(&self, _activation: &mut Activation<'_, 'gc, '_>) -> Result<i32, Error<'gc>> {
-        match &self.0.read().array {
-            ArrayStorage::Vector(vector) => Ok(vector.len() as i32),
-            ArrayStorage::Properties { length } => Ok(*length),
-        }
+    fn length(&self, activation: &mut Activation<'_, 'gc, '_>) -> Result<i32, Error<'gc>> {
+        self.get_data("length", activation)
+            .coerce_to_i32(activation)
     }
 
     fn set_length(
@@ -601,66 +501,15 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         activation: &mut Activation<'_, 'gc, '_>,
         new_length: i32,
     ) -> Result<(), Error<'gc>> {
-        let to_remove = match &mut self.0.write(activation.context.gc_context).array {
-            ArrayStorage::Vector(vector) => {
-                if new_length >= 0 {
-                    let old_length = vector.len();
-                    let new_length = new_length as usize;
-                    vector.resize(new_length, Value::Undefined);
-                    Some(new_length..old_length)
-                } else {
-                    None
-                }
-            }
-            ArrayStorage::Properties { length } => {
-                *length = new_length;
-                None
-            }
-        };
-        if let Some(to_remove) = to_remove {
-            for i in to_remove {
-                self.sync_native_property(
-                    &i.to_string(),
-                    activation.context.gc_context,
-                    None,
-                    true,
-                );
-            }
-        }
-        self.sync_native_property(
-            "length",
-            activation.context.gc_context,
-            Some(new_length.into()),
-            false,
-        );
-        Ok(())
+        self.set_data("length", new_length.into(), activation)
     }
 
     fn has_element(&self, activation: &mut Activation<'_, 'gc, '_>, index: i32) -> bool {
         self.has_own_property(activation, &index.to_string())
     }
 
-    fn get_element(&self, _activation: &mut Activation<'_, 'gc, '_>, index: i32) -> Value<'gc> {
-        match &self.0.read().array {
-            ArrayStorage::Vector(vector) => {
-                let index = index as usize;
-                if let Some(value) = vector.get(index) {
-                    value.to_owned()
-                } else {
-                    Value::Undefined
-                }
-            }
-            ArrayStorage::Properties { length } => {
-                if index < *length {
-                    if let Some(Property::Stored { value, .. }) =
-                        self.0.read().values.get(&index.to_string(), false)
-                    {
-                        return value.to_owned();
-                    }
-                }
-                Value::Undefined
-            }
-        }
+    fn get_element(&self, activation: &mut Activation<'_, 'gc, '_>, index: i32) -> Value<'gc> {
+        self.get_data(&index.to_string(), activation)
     }
 
     fn set_element(
@@ -669,54 +518,11 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         index: i32,
         value: Value<'gc>,
     ) -> Result<(), Error<'gc>> {
-        self.sync_native_property(
-            &index.to_string(),
-            activation.context.gc_context,
-            Some(value),
-            true,
-        );
-        let length = match &mut self.0.write(activation.context.gc_context).array {
-            ArrayStorage::Vector(vector) => {
-                if index >= 0 {
-                    let index = index as usize;
-                    if index >= vector.len() {
-                        vector.resize(index + 1, Value::Undefined);
-                    }
-                    vector[index] = value;
-                    Some(vector.len())
-                } else {
-                    None
-                }
-            }
-            ArrayStorage::Properties { length: _ } => {
-                // TODO: Support Array-like case?
-                None
-            }
-        };
-        if let Some(length) = length {
-            self.sync_native_property(
-                "length",
-                activation.context.gc_context,
-                Some(length.into()),
-                false,
-            );
-        }
-        Ok(())
+        self.set_data(&index.to_string(), value, activation)
     }
 
     fn delete_element(&self, activation: &mut Activation<'_, 'gc, '_>, index: i32) -> bool {
-        match &mut self.0.write(activation.context.gc_context).array {
-            ArrayStorage::Vector(vector) => {
-                let index = index as usize;
-                if index < vector.len() {
-                    vector[index] = Value::Undefined;
-                    true
-                } else {
-                    false
-                }
-            }
-            ArrayStorage::Properties { length: _ } => self.delete(activation, &index.to_string()),
-        }
+        self.delete(activation, &index.to_string())
     }
 }
 
@@ -991,7 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn test_iter_values() {
+    fn test_get_keys() {
         with_object(0, |activation, object| {
             let getter = FunctionObject::function(
                 activation.context.gc_context,

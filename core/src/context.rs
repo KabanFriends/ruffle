@@ -2,7 +2,7 @@
 
 use crate::avm1::globals::system::SystemProperties;
 use crate::avm1::{Avm1, Object as Avm1Object, Timers, Value as Avm1Value};
-use crate::avm2::{Avm2, Object as Avm2Object, Value as Avm2Value};
+use crate::avm2::{Avm2, Event as Avm2Event, Object as Avm2Object, Value as Avm2Value};
 use crate::backend::{
     audio::{AudioBackend, AudioManager, SoundHandle, SoundInstanceHandle},
     locale::LocaleBackend,
@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 /// `UpdateContext` holds shared data that is used by the various subsystems of Ruffle.
-/// `Player` crates this when it begins a tick and passes it through the call stack to
+/// `Player` creates this when it begins a tick and passes it through the call stack to
 /// children and the VM.
 pub struct UpdateContext<'a, 'gc, 'gc_context> {
     /// The queue of actions that will be run after the display list updates.
@@ -53,7 +53,7 @@ pub struct UpdateContext<'a, 'gc, 'gc_context> {
     /// variables.
     pub player_version: u8,
 
-    /// Requests a that the player re-renders after this execution (e.g. due to `updateAfterEvent`).
+    /// Requests that the player re-renders after this execution (e.g. due to `updateAfterEvent`).
     pub needs_render: &'a mut bool,
 
     /// The root SWF file.
@@ -182,6 +182,21 @@ impl<'a, 'gc, 'gc_context> UpdateContext<'a, 'gc, 'gc_context> {
             .set_global_sound_transform(sound_transform);
     }
 
+    /// Get the local sound transform of a single sound instance.
+    pub fn local_sound_transform(&self, instance: SoundInstanceHandle) -> Option<&SoundTransform> {
+        self.audio_manager.local_sound_transform(instance)
+    }
+
+    /// Set the local sound transform of a single sound instance.
+    pub fn set_local_sound_transform(
+        &mut self,
+        instance: SoundInstanceHandle,
+        sound_transform: SoundTransform,
+    ) {
+        self.audio_manager
+            .set_local_sound_transform(instance, sound_transform);
+    }
+
     pub fn start_sound(
         &mut self,
         sound: SoundHandle,
@@ -191,6 +206,15 @@ impl<'a, 'gc, 'gc_context> UpdateContext<'a, 'gc, 'gc_context> {
     ) -> Option<SoundInstanceHandle> {
         self.audio_manager
             .start_sound(self.audio, sound, settings, owner, avm1_object)
+    }
+
+    pub fn attach_avm2_sound_channel(
+        &mut self,
+        instance: SoundInstanceHandle,
+        avm2_object: Avm2Object<'gc>,
+    ) {
+        self.audio_manager
+            .attach_avm2_sound_channel(instance, avm2_object);
     }
 
     pub fn stop_sound(&mut self, instance: SoundInstanceHandle) {
@@ -400,10 +424,10 @@ pub enum ActionType<'gc> {
     /// Normal frame or event actions.
     Normal { bytecode: SwfSlice },
 
-    /// AVM1 initialize clip event
+    /// AVM1 initialize clip event.
     Initialize { bytecode: SwfSlice },
 
-    /// Construct a movie with a custom class or on(construct) events
+    /// Construct a movie with a custom class or on(construct) events.
     Construct {
         constructor: Option<Avm1Object<'gc>>,
         events: Vec<SwfSlice>,
@@ -416,7 +440,7 @@ pub enum ActionType<'gc> {
         args: Vec<Avm1Value<'gc>>,
     },
 
-    /// A system listener method,
+    /// A system listener method.
     NotifyListeners {
         listener: &'static str,
         method: &'static str,
@@ -428,6 +452,12 @@ pub enum ActionType<'gc> {
         callable: Avm2Object<'gc>,
         reciever: Option<Avm2Object<'gc>>,
         args: Vec<Avm2Value<'gc>>,
+    },
+
+    /// An AVM2 event to be dispatched.
+    Event2 {
+        event: Avm2Event<'gc>,
+        target: Avm2Object<'gc>,
     },
 }
 
@@ -485,6 +515,11 @@ impl fmt::Debug for ActionType<'_> {
                 .field("callable", callable)
                 .field("reciever", reciever)
                 .field("args", args)
+                .finish(),
+            ActionType::Event2 { event, target } => f
+                .debug_struct("ActionType::Event2")
+                .field("event", event)
+                .field("target", target)
                 .finish(),
         }
     }

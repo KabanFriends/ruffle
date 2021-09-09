@@ -158,14 +158,16 @@ fn pixel_bounds<'gc>(
     let bounds = clip.world_bounds();
 
     // Return Rectangle object.
-    let args = [
-        Value::Number(bounds.x_min.to_pixels()),
-        Value::Number(bounds.y_min.to_pixels()),
-        Value::Number(bounds.width().to_pixels()),
-        Value::Number(bounds.height().to_pixels()),
-    ];
     let constructor = activation.context.avm1.prototypes.rectangle_constructor;
-    let result = constructor.construct(activation, &args)?;
+    let result = constructor.construct(
+        activation,
+        &[
+            bounds.x_min.to_pixels().into(),
+            bounds.y_min.to_pixels().into(),
+            bounds.width().to_pixels().into(),
+            bounds.height().to_pixels().into(),
+        ],
+    )?;
     Ok(result)
 }
 
@@ -176,11 +178,13 @@ pub fn apply_to_display_object<'gc>(
 ) -> Result<(), Error<'gc>> {
     if let Some(transform) = transform.as_transform_object() {
         if let Some(clip) = transform.clip() {
-            display_object.set_matrix(activation.context.gc_context, &*clip.matrix());
-            display_object
-                .set_color_transform(activation.context.gc_context, &*clip.color_transform());
+            let matrix = *clip.matrix();
+            display_object.set_matrix(activation.context.gc_context, &matrix);
+            let color_transform = *clip.color_transform();
+            display_object.set_color_transform(activation.context.gc_context, &color_transform);
             display_object.set_transformed_by_script(activation.context.gc_context, true);
         }
     }
+
     Ok(())
 }

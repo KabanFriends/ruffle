@@ -1,4 +1,4 @@
-#![allow(clippy::inconsistent_digit_grouping, clippy::unreadable_literal)]
+#![allow(clippy::unusual_byte_groupings)]
 
 use crate::avm1::types::*;
 use crate::avm2::read::tests::read_abc_from_file;
@@ -41,10 +41,10 @@ pub fn tag_tests() -> Vec<TagTestData> {
         ),
         (
             9, // Minimum version not listed in SWF19.
-            Tag::DefineBinaryData {
+            Tag::DefineBinaryData(DefineBinaryData {
                 id: 1,
                 data: &[84, 101, 115, 116, 105, 110, 103, 33],
-            },
+            }),
             read_tag_bytes_from_file("tests/swfs/DefineBinaryData.swf", TagCode::DefineBinaryData),
         ),
         (

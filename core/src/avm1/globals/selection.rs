@@ -27,9 +27,9 @@ pub fn get_begin_index<'gc>(
         .and_then(|o| o.as_edit_text())
         .and_then(EditText::selection)
     {
-        Ok(Value::Number(selection.start() as f64))
+        Ok(selection.start().into())
     } else {
-        Ok(Value::Number(-1.0))
+        Ok((-1).into())
     }
 }
 
@@ -45,9 +45,9 @@ pub fn get_end_index<'gc>(
         .and_then(|o| o.as_edit_text())
         .and_then(EditText::selection)
     {
-        Ok(Value::Number(selection.end() as f64))
+        Ok(selection.end().into())
     } else {
-        Ok(Value::Number(-1.0))
+        Ok((-1).into())
     }
 }
 
@@ -63,9 +63,9 @@ pub fn get_caret_index<'gc>(
         .and_then(|o| o.as_edit_text())
         .and_then(EditText::selection)
     {
-        Ok(Value::Number(selection.to() as f64))
+        Ok(selection.to().into())
     } else {
-        Ok(Value::Number(-1.0))
+        Ok((-1).into())
     }
 }
 
@@ -88,15 +88,15 @@ pub fn set_selection<'gc>(
             .get(0)
             .map(|v| v.coerce_to_i32(activation))
             .transpose()?
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .max(0);
         let end = args
             .get(1)
             .map(|v| v.coerce_to_i32(activation))
             .transpose()?
-            .unwrap_or(i32::max_value());
-        let start = if start < 0 { 0 } else { start as usize };
-        let end = if end < 0 { 0 } else { end as usize };
-        let selection = TextSelection::for_range(start, end);
+            .unwrap_or(i32::MAX)
+            .max(0);
+        let selection = TextSelection::for_range(start as usize, end as usize);
         edit_box.set_selection(Some(selection), activation.context.gc_context);
     }
     Ok(Value::Undefined)
@@ -121,7 +121,7 @@ pub fn set_focus<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     let tracker = activation.context.focus_tracker;
     match args.get(0) {
-        Some(Value::Null) | Some(Value::Undefined) => {
+        Some(Value::Undefined | Value::Null) => {
             tracker.set(None, &mut activation.context);
             Ok(true.into())
         }

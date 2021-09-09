@@ -7,7 +7,7 @@ use crate::avm1::object::script_object::ScriptObject;
 use crate::avm1::object::TObject;
 use crate::avm1::property::Attribute;
 use crate::avm1::property_decl::{define_properties_on, Declaration};
-use crate::avm1::{Object, Value};
+use crate::avm1::{ArrayObject, Object, Value};
 use crate::backend::navigator::RequestOptions;
 use crate::display_object::{DisplayObject, TDisplayObject};
 use gc_arena::MutationContext;
@@ -23,9 +23,10 @@ pub fn constructor<'gc>(
     this: Object<'gc>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let listeners = ScriptObject::array(
+    let listeners = ArrayObject::new(
         activation.context.gc_context,
-        Some(activation.context.avm1.prototypes().array),
+        activation.context.avm1.prototypes().array,
+        [this.into()],
     );
     this.define_value(
         activation.context.gc_context,
@@ -33,8 +34,6 @@ pub fn constructor<'gc>(
         Value::Object(listeners.into()),
         Attribute::DONT_ENUM,
     );
-    listeners.set_element(activation, 0, this.into()).unwrap();
-
     Ok(this.into())
 }
 
@@ -48,7 +47,7 @@ pub fn load_clip<'gc>(
     let target = args.get(1).cloned().unwrap_or(Value::Undefined);
 
     if let Value::Object(target) = target {
-        if let Some(movieclip) = target
+        if let Some(mc) = target
             .as_display_object()
             .and_then(|dobj| dobj.as_movie_clip())
         {
@@ -58,7 +57,7 @@ pub fn load_clip<'gc>(
                 .fetch(&url, RequestOptions::get());
             let process = activation.context.load_manager.load_movie_into_clip(
                 activation.context.player.clone().unwrap(),
-                DisplayObject::MovieClip(movieclip),
+                DisplayObject::MovieClip(mc),
                 fetch,
                 url.to_string(),
                 None,
@@ -82,12 +81,12 @@ pub fn unload_clip<'gc>(
     let target = args.get(0).cloned().unwrap_or(Value::Undefined);
 
     if let Value::Object(target) = target {
-        if let Some(mut movieclip) = target
+        if let Some(mut mc) = target
             .as_display_object()
             .and_then(|dobj| dobj.as_movie_clip())
         {
-            movieclip.unload(&mut activation.context);
-            movieclip.replace_with_movie(activation.context.gc_context, None);
+            mc.unload(&mut activation.context);
+            mc.replace_with_movie(activation.context.gc_context, None);
 
             return Ok(true.into());
         }
@@ -104,7 +103,7 @@ pub fn get_progress<'gc>(
     let target = args.get(0).cloned().unwrap_or(Value::Undefined);
 
     if let Value::Object(target) = target {
-        if let Some(movieclip) = target
+        if let Some(mc) = target
             .as_display_object()
             .and_then(|dobj| dobj.as_movie_clip())
         {
@@ -112,8 +111,7 @@ pub fn get_progress<'gc>(
             ret_obj.define_value(
                 activation.context.gc_context,
                 "bytesLoaded",
-                movieclip
-                    .movie()
+                mc.movie()
                     .map(|mv| (mv.uncompressed_len()).into())
                     .unwrap_or(Value::Undefined),
                 Attribute::empty(),
@@ -121,8 +119,7 @@ pub fn get_progress<'gc>(
             ret_obj.define_value(
                 activation.context.gc_context,
                 "bytesTotal",
-                movieclip
-                    .movie()
+                mc.movie()
                     .map(|mv| (mv.uncompressed_len()).into())
                     .unwrap_or(Value::Undefined),
                 Attribute::empty(),

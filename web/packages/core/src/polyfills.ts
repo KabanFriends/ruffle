@@ -6,7 +6,7 @@ import { Config } from "./config";
 
 let isExtension: boolean;
 const globalConfig: Config = window.RufflePlayer?.config ?? {};
-const jsScriptUrl = publicPath(globalConfig, "ruffle.js") + "ruffle.js";
+const jsScriptUrl = publicPath(globalConfig) + "ruffle.js";
 
 /**
  * Polyfill native Flash elements with Ruffle equivalents.
@@ -31,12 +31,14 @@ function polyfillFlashInstances(): void {
         for (const elem of Array.from(objects)) {
             if (RuffleObject.isInterdictable(elem)) {
                 const ruffleObject = RuffleObject.fromNativeObjectElement(elem);
+                ruffleObject.setIsExtension(isExtension);
                 elem.replaceWith(ruffleObject);
             }
         }
         for (const elem of Array.from(embeds)) {
             if (RuffleEmbed.isInterdictable(elem)) {
                 const ruffleEmbed = RuffleEmbed.fromNativeEmbedElement(elem);
+                ruffleEmbed.setIsExtension(isExtension);
                 elem.replaceWith(ruffleEmbed);
             }
         }

@@ -4,7 +4,7 @@ use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
 use crate::avm1::object::convolution_filter::ConvolutionFilterObject;
 use crate::avm1::property_decl::{define_properties_on, Declaration};
-use crate::avm1::{Object, ScriptObject, TObject, Value};
+use crate::avm1::{ArrayObject, Object, TObject, Value};
 use gc_arena::MutationContext;
 
 const PROTO_DECLS: &[Declaration] = declare_properties! {
@@ -56,7 +56,7 @@ pub fn set_alpha<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     let alpha = args
         .get(0)
-        .unwrap_or(&0.0.into())
+        .unwrap_or(&0.into())
         .coerce_to_f64(activation)
         .map(|x| x.max(0.0).min(1.0))?;
 
@@ -84,10 +84,7 @@ pub fn set_bias<'gc>(
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let bias = args
-        .get(0)
-        .unwrap_or(&0.0.into())
-        .coerce_to_f64(activation)?;
+    let bias = args.get(0).unwrap_or(&0.into()).coerce_to_f64(activation)?;
 
     if let Some(filter) = this.as_convolution_filter_object() {
         filter.set_bias(activation.context.gc_context, bias);
@@ -171,10 +168,7 @@ pub fn set_divisor<'gc>(
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let divisor = args
-        .get(0)
-        .unwrap_or(&1.0.into())
-        .coerce_to_f64(activation)?;
+    let divisor = args.get(0).unwrap_or(&1.into()).coerce_to_f64(activation)?;
 
     if let Some(filter) = this.as_convolution_filter_object() {
         filter.set_divisor(activation.context.gc_context, divisor);
@@ -189,16 +183,12 @@ pub fn matrix<'gc>(
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(filter) = this.as_convolution_filter_object() {
-        let array = ScriptObject::array(
+        return Ok(ArrayObject::new(
             activation.context.gc_context,
-            Some(activation.context.avm1.prototypes.array),
-        );
-        for (i, item) in filter.matrix().iter().copied().enumerate() {
-            array
-                .set_element(activation, i as i32, item.into())
-                .unwrap();
-        }
-        return Ok(array.into());
+            activation.context.avm1.prototypes().array,
+            filter.matrix().iter().map(|&x| x.into()),
+        )
+        .into());
     }
 
     Ok(Value::Undefined)
@@ -254,7 +244,7 @@ pub fn set_matrix_x<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     let matrix_x = args
         .get(0)
-        .unwrap_or(&0.0.into())
+        .unwrap_or(&0.into())
         .coerce_to_i32(activation)
         .map(|x| x.max(0).min(15))? as u8;
 
@@ -284,7 +274,7 @@ pub fn set_matrix_y<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     let matrix_y = args
         .get(0)
-        .unwrap_or(&0.0.into())
+        .unwrap_or(&0.into())
         .coerce_to_i32(activation)
         .map(|x| x.max(0).min(15))? as u8;
 

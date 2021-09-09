@@ -5,7 +5,7 @@ use crate::avm1::error::Error;
 use crate::avm1::object::bevel_filter::BevelFilterType;
 use crate::avm1::object::gradient_glow_filter::GradientGlowFilterObject;
 use crate::avm1::property_decl::{define_properties_on, Declaration};
-use crate::avm1::{AvmString, Object, ScriptObject, TObject, Value};
+use crate::avm1::{ArrayObject, AvmString, Object, TObject, Value};
 use gc_arena::MutationContext;
 
 const PROTO_DECLS: &[Declaration] = declare_properties! {
@@ -59,10 +59,7 @@ pub fn set_distance<'gc>(
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let distance = args
-        .get(0)
-        .unwrap_or(&4.0.into())
-        .coerce_to_f64(activation)?;
+    let distance = args.get(0).unwrap_or(&4.into()).coerce_to_f64(activation)?;
 
     if let Some(object) = this.as_gradient_glow_filter_object() {
         object.set_distance(activation.context.gc_context, distance);
@@ -112,16 +109,12 @@ pub fn colors<'gc>(
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(filter) = this.as_gradient_glow_filter_object() {
-        let array = ScriptObject::array(
+        return Ok(ArrayObject::new(
             activation.context.gc_context,
-            Some(activation.context.avm1.prototypes.array),
-        );
-        for (i, item) in filter.colors().iter().copied().enumerate() {
-            array
-                .set_element(activation, i as i32, item.into())
-                .unwrap();
-        }
-        return Ok(array.into());
+            activation.context.avm1.prototypes().array,
+            filter.colors().iter().map(|&x| x.into()),
+        )
+        .into());
     }
 
     Ok(Value::Undefined)
@@ -176,16 +169,12 @@ pub fn alphas<'gc>(
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(filter) = this.as_gradient_glow_filter_object() {
-        let array = ScriptObject::array(
+        return Ok(ArrayObject::new(
             activation.context.gc_context,
-            Some(activation.context.avm1.prototypes.array),
-        );
-        for (i, item) in filter.alphas().iter().copied().enumerate() {
-            array
-                .set_element(activation, i as i32, item.into())
-                .unwrap();
-        }
-        return Ok(array.into());
+            activation.context.avm1.prototypes().array,
+            filter.alphas().iter().map(|&x| x.into()),
+        )
+        .into());
     }
 
     Ok(Value::Undefined)
@@ -231,16 +220,12 @@ pub fn ratios<'gc>(
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(filter) = this.as_gradient_glow_filter_object() {
-        let array = ScriptObject::array(
+        return Ok(ArrayObject::new(
             activation.context.gc_context,
-            Some(activation.context.avm1.prototypes.array),
-        );
-        for (i, item) in filter.ratios().iter().copied().enumerate() {
-            array
-                .set_element(activation, i as i32, item.into())
-                .unwrap();
-        }
-        return Ok(array.into());
+            activation.context.avm1.prototypes().array,
+            filter.ratios().iter().map(|&x| x.into()),
+        )
+        .into());
     }
 
     Ok(Value::Undefined)
@@ -299,7 +284,7 @@ pub fn set_blur_x<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     let blur_x = args
         .get(0)
-        .unwrap_or(&4.0.into())
+        .unwrap_or(&4.into())
         .coerce_to_f64(activation)
         .map(|x| x.max(0.0).min(255.0))?;
 
@@ -329,7 +314,7 @@ pub fn set_blur_y<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     let blur_y = args
         .get(0)
-        .unwrap_or(&4.0.into())
+        .unwrap_or(&4.into())
         .coerce_to_f64(activation)
         .map(|x| x.max(0.0).min(255.0))?;
 
@@ -359,7 +344,7 @@ pub fn set_strength<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     let strength = args
         .get(0)
-        .unwrap_or(&1.0.into())
+        .unwrap_or(&1.into())
         .coerce_to_f64(activation)
         .map(|x| x.max(0.0).min(255.0))?;
 
@@ -389,7 +374,7 @@ pub fn set_quality<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     let quality = args
         .get(0)
-        .unwrap_or(&1.0.into())
+        .unwrap_or(&1.into())
         .coerce_to_i32(activation)
         .map(|x| x.max(0).min(15))?;
 
@@ -420,10 +405,7 @@ pub fn set_type<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     let type_: BevelFilterType = args
         .get(0)
-        .unwrap_or(&Value::String(AvmString::new(
-            activation.context.gc_context,
-            "inner".to_string(),
-        )))
+        .unwrap_or(&"inner".into())
         .coerce_to_string(activation)
         .map(|s| s.as_str().into())?;
 
