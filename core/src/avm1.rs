@@ -28,7 +28,6 @@ pub mod object;
 pub mod property;
 pub mod property_map;
 mod scope;
-mod string;
 mod timer;
 mod value;
 
@@ -47,7 +46,6 @@ pub use object::stage_object::StageObject;
 pub use object::{Object, ObjectPtr, TObject};
 use scope::Scope;
 use smallvec::alloc::borrow::Cow;
-pub use string::AvmString;
 pub use timer::Timers;
 pub use value::Value;
 
@@ -386,8 +384,7 @@ impl<'gc> Avm1<'gc> {
         }
     }
 
-    fn push(&mut self, value: impl Into<Value<'gc>>) {
-        let value = value.into();
+    fn push(&mut self, value: Value<'gc>) {
         avm_debug!(self, "Stack push {}: {:?}", self.stack.len(), value);
         self.stack.push(value);
     }

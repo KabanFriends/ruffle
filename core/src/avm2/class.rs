@@ -5,10 +5,10 @@ use crate::avm2::method::{Method, NativeMethodImpl};
 use crate::avm2::names::{Multiname, Namespace, QName};
 use crate::avm2::object::Object;
 use crate::avm2::script::TranslationUnit;
-use crate::avm2::string::AvmString;
 use crate::avm2::traits::{Trait, TraitKind};
 use crate::avm2::value::Value;
 use crate::avm2::Error;
+use crate::string::AvmString;
 use bitflags::bitflags;
 use gc_arena::{Collect, GcCell, MutationContext};
 use std::fmt;
@@ -548,6 +548,19 @@ impl<'gc> Class<'gc> {
         for &(name, value) in items {
             self.define_instance_trait(Trait::from_method(
                 QName::new(Namespace::public(), name),
+                Method::from_builtin(value, name, mc),
+            ));
+        }
+    }
+    #[inline(never)]
+    pub fn define_as3_builtin_class_methods(
+        &mut self,
+        mc: MutationContext<'gc, '_>,
+        items: &[(&'static str, NativeMethodImpl)],
+    ) {
+        for &(name, value) in items {
+            self.define_class_trait(Trait::from_method(
+                QName::new(Namespace::as3_namespace(), name),
                 Method::from_builtin(value, name, mc),
             ));
         }

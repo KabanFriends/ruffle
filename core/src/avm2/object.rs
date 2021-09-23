@@ -3,20 +3,21 @@
 use crate::avm2::activation::Activation;
 use crate::avm2::array::ArrayStorage;
 use crate::avm2::bytearray::ByteArrayStorage;
-use crate::avm2::class::{AllocatorFn, Class};
+use crate::avm2::class::Class;
 use crate::avm2::domain::Domain;
 use crate::avm2::events::{DispatchList, Event};
 use crate::avm2::function::Executable;
 use crate::avm2::names::{Multiname, Namespace, QName};
 use crate::avm2::regexp::RegExp;
 use crate::avm2::scope::Scope;
-use crate::avm2::string::AvmString;
 use crate::avm2::traits::{Trait, TraitKind};
 use crate::avm2::value::{Hint, Value};
 use crate::avm2::vector::VectorStorage;
 use crate::avm2::Error;
 use crate::backend::audio::{SoundHandle, SoundInstanceHandle};
+use crate::bitmap::bitmap_data::BitmapData;
 use crate::display_object::DisplayObject;
+use crate::string::AvmString;
 use gc_arena::{Collect, GcCell, MutationContext};
 use ruffle_macros::enum_trait_object;
 use std::cell::{Ref, RefMut};
@@ -24,9 +25,11 @@ use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 
 mod array_object;
+mod bitmapdata_object;
 mod bytearray_object;
 mod class_object;
 mod custom_object;
+mod date_object;
 mod dispatch_object;
 mod domain_object;
 mod event_object;
@@ -43,8 +46,10 @@ mod vector_object;
 mod xml_object;
 
 pub use crate::avm2::object::array_object::{array_allocator, ArrayObject};
+pub use crate::avm2::object::bitmapdata_object::{bitmapdata_allocator, BitmapDataObject};
 pub use crate::avm2::object::bytearray_object::{bytearray_allocator, ByteArrayObject};
 pub use crate::avm2::object::class_object::ClassObject;
+pub use crate::avm2::object::date_object::{date_allocator, DateObject};
 pub use crate::avm2::object::dispatch_object::DispatchObject;
 pub use crate::avm2::object::domain_object::{appdomain_allocator, DomainObject};
 pub use crate::avm2::object::event_object::{event_allocator, EventObject};
@@ -86,6 +91,8 @@ pub use crate::avm2::object::xml_object::{xml_allocator, XmlObject};
         VectorObject(VectorObject<'gc>),
         SoundObject(SoundObject<'gc>),
         SoundChannelObject(SoundChannelObject<'gc>),
+        BitmapDataObject(BitmapDataObject<'gc>),
+        DateObject(DateObject<'gc>),
     }
 )]
 pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy {
@@ -127,14 +134,17 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     /// defined prototype methods for ES3-style classes.
     fn find_class_for_trait(self, name: &QName<'gc>) -> Result<Option<Object<'gc>>, Error> {
         let class = self
-            .as_class()
+            .as_class_definition()
             .ok_or("Cannot get base traits on non-class object")?;
 
         if class.read().has_instance_trait(name) {
             return Ok(Some(self.into()));
         }
 
-        if let Some(base) = self.superclass_object() {
+        if let Some(base) = self
+            .as_class_object()
+            .and_then(|cls| cls.superclass_object())
+        {
             return base.find_class_for_trait(name);
         }
 
@@ -423,11 +433,13 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         activation: &mut Activation<'_, 'gc, '_>,
         from_class_object: Object<'gc>,
     ) -> Result<(), Error> {
-        if let Some(superclass_object) = from_class_object.superclass_object() {
-            self.install_instance_traits(activation, superclass_object)?;
+        if let Some(from_class_object) = from_class_object.as_class_object() {
+            if let Some(superclass_object) = from_class_object.superclass_object() {
+                self.install_instance_traits(activation, superclass_object)?;
+            }
         }
 
-        if let Some(class) = from_class_object.as_class() {
+        if let Some(class) = from_class_object.as_class_definition() {
             self.install_traits(activation, class.read().instance_traits())?;
         }
 
@@ -692,7 +704,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         })?;
         let mut class_traits = Vec::new();
         superclass_object
-            .as_class()
+            .as_class_definition()
             .unwrap()
             .read()
             .lookup_instance_traits(name, &mut class_traits)?;
@@ -758,7 +770,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         })?;
         let mut class_traits = Vec::new();
         superclass_object
-            .as_class()
+            .as_class_definition()
             .unwrap()
             .read()
             .lookup_instance_traits(name, &mut class_traits)?;
@@ -818,7 +830,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         })?;
         let mut class_traits = Vec::new();
         superclass_object
-            .as_class()
+            .as_class_definition()
             .unwrap()
             .read()
             .lookup_instance_traits(name, &mut class_traits)?;
@@ -917,7 +929,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     /// coercions.
     fn to_string(&self, mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
         let class_name = self
-            .as_class()
+            .instance_of_class_definition()
             .map(|c| c.read().name().local_name())
             .unwrap_or_else(|| "Object".into());
 
@@ -934,7 +946,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     /// of the class that created this object).
     fn to_locale_string(&self, mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
         let class_name = self
-            .as_class()
+            .instance_of_class_definition()
             .map(|c| c.read().name().local_name())
             .unwrap_or_else(|| "Object".into());
 
@@ -947,14 +959,6 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     /// `valueOf` is a method used to request an object be coerced to a
     /// primitive value. Typically, this would be a number of some kind.
     fn value_of(&self, mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error>;
-
-    /// Enumerate all interfaces implemented by this class object.
-    ///
-    /// Non-classes do not implement interfaces.
-    fn interfaces(&self) -> Vec<Object<'gc>>;
-
-    /// Set the interface list for this class object.
-    fn set_interfaces(&self, gc_context: MutationContext<'gc, '_>, iface_list: Vec<Object<'gc>>);
 
     /// Determine if this object is an instance of a given type.
     ///
@@ -1009,7 +1013,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         test_class: Object<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
     ) -> Result<bool, Error> {
-        let my_class = self.as_class_object();
+        let my_class = self.instance_of();
 
         // ES3 objects are not class instances but are still treated as
         // instances of Object, which is an ES4 class.
@@ -1041,31 +1045,41 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
                 return Ok(true);
             }
 
-            for interface in class.interfaces() {
-                if Object::ptr_eq(interface, test_class) {
-                    return Ok(true);
-                }
-            }
-
-            if let (Some(my_param), Some(test_param)) =
-                (class.as_class_params(), test_class.as_class_params())
-            {
-                let mut are_all_params_coercible = true;
-
-                are_all_params_coercible &= match (my_param, test_param) {
-                    (Some(my_param), Some(test_param)) => {
-                        my_param.has_class_in_chain(test_param, activation)?
+            if let Some(class) = class.as_class_object() {
+                for interface in class.interfaces() {
+                    if Object::ptr_eq(interface, test_class) {
+                        return Ok(true);
                     }
-                    (None, Some(_)) => false,
-                    _ => true,
-                };
-
-                if are_all_params_coercible {
-                    return Ok(true);
                 }
             }
 
-            my_class = class.superclass_object()
+            if let (Some(class), Some(test_class)) =
+                (class.as_class_object(), test_class.as_class_object())
+            {
+                if let (Some(my_param), Some(test_param)) =
+                    (class.as_class_params(), test_class.as_class_params())
+                {
+                    let mut are_all_params_coercible = true;
+
+                    are_all_params_coercible &= match (my_param, test_param) {
+                        (Some(my_param), Some(test_param)) => {
+                            my_param.has_class_in_chain(test_param, activation)?
+                        }
+                        (None, Some(_)) => false,
+                        _ => true,
+                    };
+
+                    if are_all_params_coercible {
+                        return Ok(true);
+                    }
+                }
+            }
+
+            if let Some(class) = class.as_class_object() {
+                my_class = class.superclass_object()
+            } else {
+                my_class = None;
+            }
         }
 
         Ok(false)
@@ -1074,34 +1088,23 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     /// Get a raw pointer value for this object.
     fn as_ptr(&self) -> *const ObjectPtr;
 
-    /// Get this object's `Class`, if it has one.
-    fn as_class(&self) -> Option<GcCell<'gc, Class<'gc>>>;
+    /// Get this object's class, if it has one.
+    fn instance_of(&self) -> Option<Object<'gc>>;
 
-    /// Get this object's class object, if it has one.
-    fn as_class_object(&self) -> Option<Object<'gc>>;
+    /// Get this object's class's `Class`, if it has one.
+    fn instance_of_class_definition(&self) -> Option<GcCell<'gc, Class<'gc>>> {
+        self.instance_of().and_then(|cls| cls.as_class_definition())
+    }
 
-    /// Get the parameters of this class object, if present.
-    ///
-    /// Only specialized generic classes will yield their parameters.
-    fn as_class_params(&self) -> Option<Option<Object<'gc>>> {
+    /// Try to corece this object into a `ClassObject`.
+    fn as_class_object(&self) -> Option<ClassObject<'gc>> {
         None
     }
 
-    /// Associate the object with a particular class object.
-    ///
-    /// This turns the object into an instance of that class. It should only be
-    /// used in situations where the object cannot be made an instance of the
-    /// class at allocation time, such as during early runtime setup.
-    fn set_class_object(self, mc: MutationContext<'gc, '_>, class_object: Object<'gc>);
-
-    /// Get the superclass object of this object.
-    fn superclass_object(self) -> Option<Object<'gc>> {
-        None
-    }
-
-    /// Get this class's instance allocator.
-    fn instance_allocator(self) -> Option<AllocatorFn> {
-        None
+    /// Get this object's `Class`, if it's a `ClassObject`.
+    fn as_class_definition(&self) -> Option<GcCell<'gc, Class<'gc>>> {
+        self.as_class_object()
+            .map(|cls| cls.inner_class_definition())
     }
 
     /// Get this object's `Executable`, if it has one.
@@ -1237,6 +1240,29 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     ///
     /// This does nothing if the object is not a sound channel.
     fn set_sound_instance(self, _mc: MutationContext<'gc, '_>, _sound: SoundInstanceHandle) {}
+
+    /// Unwrap this object's bitmap data
+    fn as_bitmap_data(&self) -> Option<GcCell<'gc, BitmapData<'gc>>> {
+        None
+    }
+
+    /// Initialize the bitmap data in this object, if it's capable of
+    /// supporting said data.
+    ///
+    /// This should only be called to initialize the association between an AVM
+    /// object and it's associated bitmap data. This association should not be
+    /// reinitialized later.
+    fn init_bitmap_data(
+        &self,
+        _mc: MutationContext<'gc, '_>,
+        _new_bitmap: GcCell<'gc, BitmapData<'gc>>,
+    ) {
+    }
+
+    /// Get this objects `DateObject`, if it has one.
+    fn as_date_object(&self) -> Option<DateObject<'gc>> {
+        None
+    }
 }
 
 pub enum ObjectPtr {}

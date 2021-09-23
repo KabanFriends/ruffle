@@ -4,10 +4,10 @@ use crate::avm2::class::{Class, ClassAttributes};
 use crate::avm2::method::{Method, NativeMethodImpl};
 use crate::avm2::names::{Namespace, QName};
 use crate::avm2::object::{bytearray_allocator, Object, TObject};
-use crate::avm2::string::AvmString;
 use crate::avm2::value::Value;
 use crate::avm2::Error;
 use crate::character::Character;
+use crate::string::AvmString;
 use encoding_rs::Encoding;
 use encoding_rs::UTF_8;
 use gc_arena::{GcCell, MutationContext};
@@ -23,8 +23,8 @@ pub fn instance_init<'gc>(
         activation.super_init(this, &[])?;
 
         let class_object = this
-            .as_class_object()
-            .ok_or("Attempted to construct non-instance ByteArray")?;
+            .instance_of()
+            .ok_or("Attempted to construct ByteArray on a bare object")?;
         if let Some((movie, id)) = activation
             .context
             .library

@@ -1,6 +1,6 @@
 //! `MovieClip` display object and support code.
 use crate::avm1::{
-    Avm1, AvmString, Object as Avm1Object, StageObject, TObject as Avm1TObject, Value as Avm1Value,
+    Avm1, Object as Avm1Object, StageObject, TObject as Avm1TObject, Value as Avm1Value,
 };
 use crate::avm2::Activation as Avm2Activation;
 use crate::avm2::{
@@ -27,6 +27,7 @@ use crate::drawing::Drawing;
 use crate::events::{ButtonKeyCode, ClipEvent, ClipEventResult};
 use crate::font::Font;
 use crate::prelude::*;
+use crate::string::AvmString;
 use crate::tag_utils::{self, DecodeResult, SwfMovie, SwfSlice, SwfStream};
 use crate::types::{Degrees, Percent};
 use crate::vminterface::{AvmObject, AvmType, Instantiator};
@@ -616,6 +617,12 @@ impl<'gc> MovieClip<'gc> {
                             Some(Character::BinaryData(_)) => {}
                             Some(Character::Font(_)) => {}
                             Some(Character::Sound(_)) => {}
+                            Some(Character::Bitmap(bitmap)) => {
+                                bitmap.set_avm2_bitmapdata_class(
+                                    activation.context.gc_context,
+                                    class_object,
+                                );
+                            }
                             _ => {
                                 log::warn!(
                                     "Symbol class {} cannot be assigned to invalid character id {}",

@@ -110,16 +110,8 @@ macro_rules! impl_avm2_custom_object_instance {
             self.0.read().$field.resolve_any_trait(local_name)
         }
 
-        fn as_class(&self) -> Option<GcCell<'gc, Class<'gc>>> {
-            self.0.read().$field.as_class()
-        }
-
-        fn as_class_object(&self) -> Option<Object<'gc>> {
-            self.0.read().$field.as_class_object()
-        }
-
-        fn set_class_object(self, mc: MutationContext<'gc, '_>, class_object: Object<'gc>) {
-            self.0.write(mc).$field.set_class_object(class_object);
+        fn instance_of(&self) -> Option<Object<'gc>> {
+            self.0.read().$field.instance_of()
         }
 
         fn set_local_property_is_enumerable(
@@ -275,18 +267,6 @@ macro_rules! impl_avm2_custom_object {
                 .write(mc)
                 .$field
                 .install_const(name, id, value, is_final)
-        }
-
-        fn interfaces(&self) -> Vec<Object<'gc>> {
-            self.0.read().$field.interfaces()
-        }
-
-        fn set_interfaces(
-            &self,
-            gc_context: MutationContext<'gc, '_>,
-            iface_list: Vec<Object<'gc>>,
-        ) {
-            self.0.write(gc_context).$field.set_interfaces(iface_list)
         }
     };
 }

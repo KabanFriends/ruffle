@@ -3,7 +3,8 @@ use crate::avm1::error::Error;
 use crate::avm1::function::ExecutionReason;
 use crate::avm1::property::{Attribute, Property};
 use crate::avm1::property_map::{Entry, PropertyMap};
-use crate::avm1::{AvmString, Object, ObjectPtr, TObject, Value};
+use crate::avm1::{Object, ObjectPtr, TObject, Value};
+use crate::string::AvmString;
 use core::fmt;
 use gc_arena::{Collect, GcCell, MutationContext};
 use std::borrow::Cow;
@@ -319,6 +320,7 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         activation: &mut Activation<'_, 'gc, '_>,
         name: &str,
         value: &mut Value<'gc>,
+        this: Object<'gc>,
     ) -> Result<(), Error<'gc>> {
         let mut result = Ok(());
         let watcher = self
@@ -329,7 +331,6 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
             .cloned();
         if let Some(watcher) = watcher {
             let old_value = self.get_stored(name, activation)?;
-            let this = (*self).into();
             match watcher.call(activation, name, old_value, *value, this, Some(this)) {
                 Ok(v) => *value = v,
                 Err(Error::ThrownValue(e)) => {

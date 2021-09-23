@@ -5,9 +5,9 @@ use crate::avm2::names::Namespace;
 use crate::avm2::names::QName;
 use crate::avm2::object::{NamespaceObject, Object, PrimitiveObject, TObject};
 use crate::avm2::script::TranslationUnit;
-use crate::avm2::string::AvmString;
 use crate::avm2::Error;
 use crate::ecma_conversions::{f64_to_wrapping_i32, f64_to_wrapping_u32};
+use crate::string::AvmString;
 use gc_arena::{Collect, MutationContext};
 use std::cell::Ref;
 use swf::avm2::types::{DefaultValue as AbcDefaultValue, Index};
@@ -611,7 +611,7 @@ impl<'gc> Value<'gc> {
             }
         }
 
-        if let Some(static_class) = class.as_class() {
+        if let Some(static_class) = class.as_class_definition() {
             return Err(format!(
                 "Cannot coerce {:?} to an {:?}",
                 self,
@@ -671,7 +671,7 @@ impl<'gc> Value<'gc> {
         activation: &mut Activation<'_, 'gc, '_>,
         type_object: Object<'gc>,
     ) -> Result<bool, Error> {
-        if let Some(type_class) = type_object.as_class() {
+        if let Some(type_class) = type_object.as_class_definition() {
             if type_class.read().name() == &QName::new(Namespace::public(), "Number") {
                 return Ok(self.is_number());
             }

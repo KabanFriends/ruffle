@@ -23,8 +23,8 @@ pub fn instance_init<'gc>(
 
         if this.as_sound().is_none() {
             let class_object = this
-                .as_class_object()
-                .ok_or("Attempted to construct non-instance Sound.")?;
+                .instance_of()
+                .ok_or("Attempted to construct Sound on a bare object.")?;
 
             if let Some((movie, symbol)) = activation
                 .context
@@ -40,7 +40,7 @@ pub fn instance_init<'gc>(
                 {
                     this.set_sound(activation.context.gc_context, *sound);
                 } else {
-                    log::warn!("Attempted to construct subclass of Sound, {}, which is associated with non-Sound character {}", class_object.as_class().expect("Class object is also a class").read().name().local_name(), symbol);
+                    log::warn!("Attempted to construct subclass of Sound, {}, which is associated with non-Sound character {}", class_object.as_class_definition().expect("Class object is also a class").read().name().local_name(), symbol);
                 }
             }
         }

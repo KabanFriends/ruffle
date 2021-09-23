@@ -1,9 +1,9 @@
 //! `flash.utils` namespace
 
 use crate::avm2::object::TObject;
-use crate::avm2::string::AvmString;
 use crate::avm2::QName;
 use crate::avm2::{Activation, Error, Object, Value};
+use crate::string::AvmString;
 
 pub mod bytearray;
 pub mod compression_algorithm;
@@ -29,9 +29,18 @@ pub fn get_qualified_class_name<'gc>(
         .unwrap_or(&Value::Undefined)
         .coerce_to_object(activation)?;
 
+    let class = match obj.as_class_object() {
+        Some(class) => class,
+        None => match obj.instance_of() {
+            Some(cls) => cls.as_class_object().unwrap(),
+            None => return Ok(Value::Null),
+        },
+    };
+
     Ok(AvmString::new(
         activation.context.gc_context,
-        obj.as_class()
+        class
+            .as_class_definition()
             .ok_or("This object does not have a class")?
             .read()
             .name()
@@ -51,11 +60,19 @@ pub fn get_qualified_super_class_name<'gc>(
         .unwrap_or(&Value::Undefined)
         .coerce_to_object(activation)?;
 
-    if let Some(super_class) = obj.superclass_object() {
+    let class = match obj.as_class_object() {
+        Some(class) => class,
+        None => match obj.instance_of() {
+            Some(cls) => cls.as_class_object().unwrap(),
+            None => return Ok(Value::Null),
+        },
+    };
+
+    if let Some(super_class) = class.superclass_object() {
         Ok(AvmString::new(
             activation.context.gc_context,
             super_class
-                .as_class()
+                .as_class_definition()
                 .ok_or("This object does not have a class")?
                 .read()
                 .name()

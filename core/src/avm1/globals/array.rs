@@ -4,7 +4,8 @@ use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
 use crate::avm1::function::{Executable, FunctionObject};
 use crate::avm1::property_decl::{define_properties_on, Declaration};
-use crate::avm1::{ArrayObject, AvmString, Object, TObject, Value};
+use crate::avm1::{ArrayObject, Object, TObject, Value};
+use crate::string::AvmString;
 use bitflags::bitflags;
 use gc_arena::MutationContext;
 use std::cmp::Ordering;
@@ -628,7 +629,7 @@ fn sort_compare_string_ignore_case<'gc>(
     let b_str = b.coerce_to_string(activation);
     // TODO: Handle errors.
     if let (Ok(a_str), Ok(b_str)) = (a_str, b_str) {
-        crate::string_utils::swf_string_cmp_ignore_case(&a_str, &b_str)
+        crate::string::utils::swf_string_cmp_ignore_case(&a_str, &b_str)
     } else {
         DEFAULT_ORDERING
     }

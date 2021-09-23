@@ -1,16 +1,15 @@
 //! Function object impl
 
 use crate::avm2::activation::Activation;
-use crate::avm2::class::Class;
 use crate::avm2::function::Executable;
 use crate::avm2::method::Method;
 use crate::avm2::names::{Namespace, QName};
 use crate::avm2::object::script_object::{ScriptObject, ScriptObjectData};
 use crate::avm2::object::{Object, ObjectPtr, TObject};
 use crate::avm2::scope::Scope;
-use crate::avm2::string::AvmString;
 use crate::avm2::value::Value;
 use crate::avm2::Error;
+use crate::string::AvmString;
 use crate::{
     impl_avm2_custom_object, impl_avm2_custom_object_instance, impl_avm2_custom_object_properties,
 };
@@ -81,32 +80,6 @@ impl<'gc> FunctionObject<'gc> {
             FunctionObjectData {
                 base: ScriptObjectData::base_new(Some(fn_proto), None),
                 exec,
-            },
-        ))
-        .into()
-    }
-
-    /// Construct a function from an ABC method, the current closure scope, and
-    /// a function prototype.
-    ///
-    /// The given `reciever`, if supplied, will override any user-specified
-    /// `this` parameter.
-    ///
-    /// This function exists primarily for early globals. Unless you are in a
-    /// position where you cannot access `Function.prototype` yet, you should
-    /// use `from_method` instead.
-    pub fn from_method_and_proto(
-        mc: MutationContext<'gc, '_>,
-        method: Method<'gc>,
-        scope: Option<GcCell<'gc, Scope<'gc>>>,
-        fn_proto: Object<'gc>,
-        receiver: Option<Object<'gc>>,
-    ) -> Object<'gc> {
-        FunctionObject(GcCell::allocate(
-            mc,
-            FunctionObjectData {
-                base: ScriptObjectData::base_new(Some(fn_proto), None),
-                exec: Some(Executable::from_method(method, scope, receiver, mc)),
             },
         ))
         .into()

@@ -1,7 +1,6 @@
 //! Default AVM2 object impl
 
 use crate::avm2::activation::Activation;
-use crate::avm2::class::Class;
 use crate::avm2::names::{Namespace, QName};
 use crate::avm2::object::{Object, ObjectPtr, TObject};
 use crate::avm2::property::Property;
@@ -9,9 +8,9 @@ use crate::avm2::property_map::PropertyMap;
 use crate::avm2::return_value::ReturnValue;
 use crate::avm2::scope::Scope;
 use crate::avm2::slot::Slot;
-use crate::avm2::string::AvmString;
 use crate::avm2::value::Value;
 use crate::avm2::Error;
+use crate::string::AvmString;
 use gc_arena::{Collect, GcCell, MutationContext};
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -58,9 +57,6 @@ pub struct ScriptObjectData<'gc> {
 
     /// Enumeratable property names.
     enumerants: Vec<QName<'gc>>,
-
-    /// Interfaces implemented by this object. (classes only)
-    interfaces: Vec<Object<'gc>>,
 }
 
 impl<'gc> TObject<'gc> for ScriptObject<'gc> {
@@ -222,7 +218,7 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
     }
 
     fn to_string(&self, mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
-        if let Some(class) = self.as_class() {
+        if let Some(class) = self.instance_of_class_definition() {
             Ok(AvmString::new(mc, format!("[object {}]", class.read().name().local_name())).into())
         } else {
             Ok("[object Object]".into())
@@ -303,24 +299,8 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         self.0.write(mc).install_const(name, id, value, is_final)
     }
 
-    fn interfaces(&self) -> Vec<Object<'gc>> {
-        self.0.read().interfaces()
-    }
-
-    fn set_interfaces(&self, gc_context: MutationContext<'gc, '_>, iface_list: Vec<Object<'gc>>) {
-        self.0.write(gc_context).set_interfaces(iface_list)
-    }
-
-    fn as_class(&self) -> Option<GcCell<'gc, Class<'gc>>> {
-        self.0.read().as_class()
-    }
-
-    fn as_class_object(&self) -> Option<Object<'gc>> {
-        self.0.read().as_class_object()
-    }
-
-    fn set_class_object(self, mc: MutationContext<'gc, '_>, class_object: Object<'gc>) {
-        self.0.write(mc).set_class_object(class_object);
+    fn instance_of(&self) -> Option<Object<'gc>> {
+        self.0.read().instance_of()
     }
 }
 
@@ -365,7 +345,6 @@ impl<'gc> ScriptObjectData<'gc> {
             proto,
             instance_of,
             enumerants: Vec::new(),
-            interfaces: Vec::new(),
         }
     }
 
@@ -383,7 +362,7 @@ impl<'gc> ScriptObjectData<'gc> {
                 Some(
                     activation
                         .subclass_object()
-                        .or_else(|| self.as_class_object())
+                        .or_else(|| self.instance_of())
                         .unwrap_or(receiver),
                 ),
             )
@@ -399,7 +378,7 @@ impl<'gc> ScriptObjectData<'gc> {
         value: Value<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
     ) -> Result<ReturnValue<'gc>, Error> {
-        let class = self.as_class_object();
+        let class = self.instance_of();
         let slot_id = if let Some(prop) = self.values.get(name) {
             if let Some(slot_id) = prop.slot_id() {
                 Some(slot_id)
@@ -437,7 +416,7 @@ impl<'gc> ScriptObjectData<'gc> {
         value: Value<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
     ) -> Result<ReturnValue<'gc>, Error> {
-        let class = self.as_class_object();
+        let class = self.instance_of();
         if let Some(prop) = self.values.get_mut(name) {
             if let Some(slot_id) = prop.slot_id() {
                 self.init_slot(slot_id, value, activation.context.gc_context)?;
@@ -533,12 +512,13 @@ impl<'gc> ScriptObjectData<'gc> {
 
                 while let Some(class) = cur_class {
                     let cur_static_class = class
-                        .as_class()
+                        .as_class_definition()
                         .ok_or("Object is not a class constructor")?;
                     if cur_static_class.read().has_instance_trait(name) {
                         return Ok(true);
                     }
 
+                    let class = class.as_class_object().unwrap();
                     cur_class = class.superclass_object();
                 }
 
@@ -593,7 +573,7 @@ impl<'gc> ScriptObjectData<'gc> {
 
                 while let Some(class) = cur_class {
                     let cur_static_class = class
-                        .as_class()
+                        .as_class_definition()
                         .ok_or("Object is not a class constructor")?;
                     if let Some(ns) = cur_static_class
                         .read()
@@ -602,6 +582,7 @@ impl<'gc> ScriptObjectData<'gc> {
                         return Ok(Some(ns));
                     }
 
+                    let class = class.as_class_object().unwrap();
                     cur_class = class.superclass_object();
                 }
 
@@ -779,13 +760,15 @@ impl<'gc> ScriptObjectData<'gc> {
         name: QName<'gc>,
         value: Value<'gc>,
     ) -> Result<(), Error> {
-        if let Some(class) = self.as_class() {
-            if class.read().is_sealed() {
-                return Err(format!(
-                    "Objects of type {:?} are not dynamic",
-                    class.read().name().local_name()
-                )
-                .into());
+        if let Some(class) = self.instance_of() {
+            if let Some(class) = class.as_class_definition() {
+                if class.read().is_sealed() {
+                    return Err(format!(
+                        "Objects of type {:?} are not dynamic",
+                        class.read().name().local_name()
+                    )
+                    .into());
+                }
             }
         }
 
@@ -837,32 +820,13 @@ impl<'gc> ScriptObjectData<'gc> {
         }
     }
 
-    /// Enumerate all interfaces implemented by this object.
-    pub fn interfaces(&self) -> Vec<Object<'gc>> {
-        self.interfaces.clone()
-    }
-
-    /// Set the interface list for this object.
-    pub fn set_interfaces(&mut self, iface_list: Vec<Object<'gc>>) {
-        self.interfaces = iface_list;
-    }
-
-    /// Get the class for this object, if it has one.
-    pub fn as_class(&self) -> Option<GcCell<'gc, Class<'gc>>> {
-        self.instance_of.and_then(|class| class.as_class())
-    }
-
     /// Get the class object for this object, if it has one.
-    pub fn as_class_object(&self) -> Option<Object<'gc>> {
+    pub fn instance_of(&self) -> Option<Object<'gc>> {
         self.instance_of
     }
 
-    /// Associate the object with a particular class object.
-    ///
-    /// This turns the object into an instance of that class. It should only be
-    /// used in situations where the object cannot be made an instance of the
-    /// class at allocation time, such as during early runtime setup.
-    pub fn set_class_object(&mut self, class_object: Object<'gc>) {
-        self.instance_of = Some(class_object)
+    /// Set the class object for this object.
+    pub fn set_instance_of(&mut self, instance_of: Object<'gc>) {
+        self.instance_of = Some(instance_of);
     }
 }

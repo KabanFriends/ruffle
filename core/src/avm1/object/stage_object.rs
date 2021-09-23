@@ -4,11 +4,12 @@ use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
 use crate::avm1::property::Attribute;
 use crate::avm1::property_map::PropertyMap;
-use crate::avm1::{AvmString, Object, ObjectPtr, ScriptObject, TDisplayObject, TObject, Value};
+use crate::avm1::{Object, ObjectPtr, ScriptObject, TDisplayObject, TObject, Value};
 use crate::avm_warn;
 use crate::context::UpdateContext;
 use crate::display_object::{DisplayObject, EditText, MovieClip, TDisplayObjectContainer};
-use crate::string_utils::swf_string_eq;
+use crate::string::utils::swf_string_eq;
+use crate::string::AvmString;
 use crate::types::Percent;
 use gc_arena::{Collect, GcCell, MutationContext};
 use std::borrow::Cow;
@@ -333,8 +334,12 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
         activation: &mut Activation<'_, 'gc, '_>,
         name: &str,
         value: &mut Value<'gc>,
+        this: Object<'gc>,
     ) -> Result<(), Error<'gc>> {
-        self.0.read().base.call_watcher(activation, name, value)
+        self.0
+            .read()
+            .base
+            .call_watcher(activation, name, value, this)
     }
 
     fn watch(

@@ -4,7 +4,8 @@ use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
 use crate::avm1::object::{ObjectPtr, TObject};
 use crate::avm1::property::Attribute;
-use crate::avm1::{AvmString, Object, ScriptObject, Value};
+use crate::avm1::{Object, ScriptObject, Value};
+use crate::string::AvmString;
 use crate::xml::{XmlName, XmlNode};
 use gc_arena::{Collect, MutationContext};
 use std::borrow::Cow;
@@ -146,8 +147,9 @@ impl<'gc> TObject<'gc> for XmlAttributesObject<'gc> {
         activation: &mut Activation<'_, 'gc, '_>,
         name: &str,
         value: &mut Value<'gc>,
+        this: Object<'gc>,
     ) -> Result<(), Error<'gc>> {
-        self.base().call_watcher(activation, name, value)
+        self.base().call_watcher(activation, name, value, this)
     }
 
     fn watch(

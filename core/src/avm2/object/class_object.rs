@@ -8,9 +8,9 @@ use crate::avm2::object::function_object::FunctionObject;
 use crate::avm2::object::script_object::{scriptobject_allocator, ScriptObject, ScriptObjectData};
 use crate::avm2::object::{Object, ObjectPtr, TObject};
 use crate::avm2::scope::Scope;
-use crate::avm2::string::AvmString;
 use crate::avm2::value::Value;
 use crate::avm2::Error;
+use crate::string::AvmString;
 use crate::{impl_avm2_custom_object, impl_avm2_custom_object_properties};
 use gc_arena::{Collect, GcCell, MutationContext};
 use std::collections::HashMap;
@@ -64,6 +64,9 @@ pub struct ClassObjectData<'gc> {
     /// classes, though we consider the parameter to be the class `Object` when
     /// we get a param of `null`.
     applications: HashMap<Option<Object<'gc>>, Object<'gc>>,
+
+    /// Interfaces implemented by this class.
+    interfaces: Vec<Object<'gc>>,
 }
 
 impl<'gc> ClassObject<'gc> {
@@ -82,7 +85,54 @@ impl<'gc> ClassObject<'gc> {
         superclass_object: Option<Object<'gc>>,
         scope: Option<GcCell<'gc, Scope<'gc>>>,
     ) -> Result<Object<'gc>, Error> {
-        if let Some(base_class) = superclass_object.and_then(|b| b.as_class()) {
+        let class_object = Self::from_class_partial(activation, class, superclass_object, scope)?;
+
+        let instance_allocator = class_object.0.read().instance_allocator.0;
+
+        //TODO: Class prototypes are *not* instances of their class and should
+        //not be allocated by the class allocator, but instead should be
+        //regular objects
+        let class_proto = if let Some(superclass_object) = superclass_object {
+            let base_proto = superclass_object
+                .get_property(
+                    superclass_object,
+                    &QName::new(Namespace::public(), "prototype"),
+                    activation,
+                )?
+                .coerce_to_object(activation)?;
+            instance_allocator(superclass_object, base_proto, activation)?
+        } else {
+            ScriptObject::bare_object(activation.context.gc_context)
+        };
+
+        class_object.link_prototype(activation, class_proto)?;
+
+        let class_class = activation.avm2().classes().class;
+        let class_class_proto = activation.avm2().prototypes().class;
+
+        class_object.link_type(activation, class_class_proto, class_class);
+        class_object.into_finished_class(activation)
+    }
+
+    /// Allocate a class but do not properly construct it.
+    ///
+    /// This function does the bare minimum to allocate classes, without taking
+    /// any action that would require the existence of any other objects in the
+    /// object graph. The resulting class will be a bare object and should not
+    /// be used or presented to user code until you finish initializing it. You
+    /// do that by calling `link_prototype`, `link_type`, and then
+    /// `into_finished_class` in that order.
+    ///
+    /// This returns the class object directly (*not* an `Object`), to allow
+    /// further manipulation of the class once it's dependent types have been
+    /// allocated.
+    pub fn from_class_partial(
+        activation: &mut Activation<'_, 'gc, '_>,
+        class: GcCell<'gc, Class<'gc>>,
+        superclass_object: Option<Object<'gc>>,
+        scope: Option<GcCell<'gc, Scope<'gc>>>,
+    ) -> Result<Self, Error> {
+        if let Some(base_class) = superclass_object.and_then(|b| b.as_class_definition()) {
             if base_class.read().is_final() {
                 return Err(format!(
                     "Base class {:?} is final and cannot be extended",
@@ -103,26 +153,12 @@ impl<'gc> ClassObject<'gc> {
         let instance_allocator = class
             .read()
             .instance_allocator()
-            .or_else(|| superclass_object.and_then(|c| c.instance_allocator()))
+            .or_else(|| {
+                superclass_object
+                    .and_then(|c| c.as_class_object())
+                    .and_then(|c| c.instance_allocator())
+            })
             .unwrap_or(scriptobject_allocator);
-
-        //TODO: Class prototypes are *not* instances of their class and should
-        //not be allocated by the class allocator, but instead should be
-        //regular objects
-        let class_proto = if let Some(superclass_object) = superclass_object {
-            let base_proto = superclass_object
-                .get_property(
-                    superclass_object,
-                    &QName::new(Namespace::public(), "prototype"),
-                    activation,
-                )?
-                .coerce_to_object(activation)?;
-            instance_allocator(superclass_object, base_proto, activation)?
-        } else {
-            ScriptObject::bare_object(activation.context.gc_context)
-        };
-
-        let fn_proto = activation.avm2().prototypes().function;
 
         let constructor = Executable::from_method(
             class.read().instance_init(),
@@ -137,10 +173,10 @@ impl<'gc> ClassObject<'gc> {
             activation.context.gc_context,
         );
 
-        let mut class_object = ClassObject(GcCell::allocate(
+        let class_object = ClassObject(GcCell::allocate(
             activation.context.gc_context,
             ClassObjectData {
-                base: ScriptObjectData::base_new(Some(fn_proto), None),
+                base: ScriptObjectData::base_new(None, None),
                 class,
                 scope,
                 superclass_object,
@@ -149,91 +185,43 @@ impl<'gc> ClassObject<'gc> {
                 native_constructor,
                 params: None,
                 applications: HashMap::new(),
+                interfaces: Vec::new(),
             },
         ));
 
-        class_object.link_prototype(activation, class_proto)?;
-        class_object.link_interfaces(activation)?;
-        class_object.install_traits(activation, class.read().class_traits())?;
-        class_object.run_class_initializer(activation)?;
-
-        Ok(class_object.into())
+        Ok(class_object)
     }
 
-    /// Construct a builtin type from a Rust constructor and prototype.
+    /// Finish initialization of the class.
     ///
-    /// This function returns both the class constructor object and the
-    /// class initializer to call before the class is used. The constructor
-    /// should be used in all cases where the type needs to be referred to. You
-    /// must call the class initializer yourself.
+    /// This is intended for classes that were pre-allocated with
+    /// `from_class_partial`. It skips several critical initialization steps
+    /// that are necessary to obtain a functioning class object:
     ///
-    /// You are also required to install class constructor traits yourself onto
-    /// the returned object. This is due to the fact that normal trait
-    /// installation requires a working `context.avm2` with a link to the
-    /// function prototype, and this is intended to be called before that link
-    /// has been established.
+    ///  - The `link_type` step, which makes the class an instance of another
+    ///    type
+    ///  - The `link_prototype` step, which installs a prototype for instances
+    ///    of this type to inherit
     ///
-    /// `base_class` is allowed to be `None`, corresponding to a `null` value
-    /// in the VM. This corresponds to no base class, and in practice appears
-    /// to be limited to interfaces.
-    pub fn from_builtin_class(
-        mc: MutationContext<'gc, '_>,
-        superclass_object: Option<Object<'gc>>,
-        class: GcCell<'gc, Class<'gc>>,
-        scope: Option<GcCell<'gc, Scope<'gc>>>,
-        mut prototype: Object<'gc>,
-        fn_proto: Object<'gc>,
-    ) -> Result<(Object<'gc>, Object<'gc>), Error> {
-        let instance_allocator = class
-            .read()
-            .instance_allocator()
-            .or_else(|| superclass_object.and_then(|c| c.instance_allocator()))
-            .unwrap_or(scriptobject_allocator);
+    /// Make sure to call them before calling this function, or it may yield an
+    /// error.
+    pub fn into_finished_class(
+        mut self,
+        activation: &mut Activation<'_, 'gc, '_>,
+    ) -> Result<Object<'gc>, Error> {
+        let class = self
+            .as_class_definition()
+            .ok_or("Cannot finish initialization of core class without a class definition!")?;
+        let class_class = self.0.read().base.instance_of().ok_or(
+            "Cannot finish initialization of core class without it being linked to a type!",
+        )?;
 
-        let constructor = Executable::from_method(class.read().instance_init(), scope, None, mc);
-        let native_constructor =
-            Executable::from_method(class.read().native_instance_init(), scope, None, mc);
-        let mut base: Object<'gc> = ClassObject(GcCell::allocate(
-            mc,
-            ClassObjectData {
-                base: ScriptObjectData::base_new(Some(fn_proto), None),
-                class,
-                scope,
-                superclass_object,
-                instance_allocator: Allocator(instance_allocator),
-                constructor,
-                native_constructor,
-                params: None,
-                applications: HashMap::new(),
-            },
-        ))
-        .into();
+        self.link_interfaces(activation)?;
+        self.install_traits(activation, class.read().class_traits())?;
+        self.install_instance_traits(activation, class_class)?;
+        self.run_class_initializer(activation)?;
 
-        base.install_slot(
-            mc,
-            QName::new(Namespace::public(), "prototype"),
-            0,
-            prototype.into(),
-            false,
-        );
-        prototype.install_slot(
-            mc,
-            QName::new(Namespace::public(), "constructor"),
-            0,
-            base.into(),
-            false,
-        );
-
-        let class_initializer = class.read().class_init();
-        let class_object = FunctionObject::from_method_and_proto(
-            mc,
-            class_initializer,
-            scope,
-            fn_proto,
-            Some(base),
-        );
-
-        Ok((base, class_object))
+        Ok(self.into())
     }
 
     /// Link this class to a prototype.
@@ -281,7 +269,7 @@ impl<'gc> ClassObject<'gc> {
             }
 
             let interface = interface.unwrap().coerce_to_object(activation)?;
-            if let Some(class) = interface.as_class() {
+            if let Some(class) = interface.as_class_definition() {
                 if !class.read().is_interface() {
                     return Err(format!(
                         "Class {:?} is not an interface and cannot be implemented by classes",
@@ -295,10 +283,27 @@ impl<'gc> ClassObject<'gc> {
         }
 
         if !interfaces.is_empty() {
-            self.set_interfaces(activation.context.gc_context, interfaces);
+            self.0.write(activation.context.gc_context).interfaces = interfaces;
         }
 
         Ok(())
+    }
+
+    /// Manually set the type of this `Class`.
+    ///
+    /// This is intended to support initialization of early types such as
+    /// `Class` and `Object`. All other types should pull `Class`'s prototype
+    /// and type object from the `Avm2` instance.
+    pub fn link_type(
+        self,
+        activation: &mut Activation<'_, 'gc, '_>,
+        proto: Object<'gc>,
+        instance_of: Object<'gc>,
+    ) {
+        let mut write = self.0.write(activation.context.gc_context);
+
+        write.base.set_instance_of(instance_of);
+        write.base.set_proto(proto);
     }
 
     /// Run the class's initializer method.
@@ -329,6 +334,26 @@ impl<'gc> ClassObject<'gc> {
         }
 
         Ok(())
+    }
+
+    pub fn inner_class_definition(self) -> GcCell<'gc, Class<'gc>> {
+        self.0.read().class
+    }
+
+    pub fn interfaces(self) -> Vec<Object<'gc>> {
+        self.0.read().interfaces.clone()
+    }
+
+    pub fn superclass_object(self) -> Option<Object<'gc>> {
+        self.0.read().superclass_object
+    }
+
+    pub fn as_class_params(self) -> Option<Option<Object<'gc>>> {
+        self.0.read().params
+    }
+
+    fn instance_allocator(self) -> Option<AllocatorFn> {
+        Some(self.0.read().instance_allocator.0)
     }
 }
 
@@ -434,14 +459,6 @@ impl<'gc> TObject<'gc> for ClassObject<'gc> {
         .into())
     }
 
-    fn superclass_object(self) -> Option<Object<'gc>> {
-        self.0.read().superclass_object
-    }
-
-    fn instance_allocator(self) -> Option<AllocatorFn> {
-        Some(self.0.read().instance_allocator.0)
-    }
-
     fn get_scope(self) -> Option<GcCell<'gc, Scope<'gc>>> {
         self.0.read().scope
     }
@@ -469,20 +486,12 @@ impl<'gc> TObject<'gc> for ClassObject<'gc> {
             .resolve_any_class_trait(local_name))
     }
 
-    fn as_class(&self) -> Option<GcCell<'gc, Class<'gc>>> {
-        Some(self.0.read().class)
+    fn as_class_object(&self) -> Option<ClassObject<'gc>> {
+        Some(*self)
     }
 
-    fn as_class_object(&self) -> Option<Object<'gc>> {
-        None //AS3 does not have metaclasses
-    }
-
-    fn as_class_params(&self) -> Option<Option<Object<'gc>>> {
-        self.0.read().params
-    }
-
-    fn set_class_object(self, _mc: MutationContext<'gc, '_>, _class_object: Object<'gc>) {
-        //Do nothing, as classes cannot be turned into instances.
+    fn instance_of(&self) -> Option<Object<'gc>> {
+        self.0.read().base.instance_of()
     }
 
     fn set_local_property_is_enumerable(
@@ -513,7 +522,7 @@ impl<'gc> TObject<'gc> for ClassObject<'gc> {
         nullable_params: &[Value<'gc>],
     ) -> Result<Object<'gc>, Error> {
         let self_class = self
-            .as_class()
+            .as_class_definition()
             .ok_or("Attempted to apply type arguments to non-class!")?;
 
         if !self_class.read().is_generic() {
@@ -553,7 +562,7 @@ impl<'gc> TObject<'gc> for ClassObject<'gc> {
             class_params.push(
                 param
                     .unwrap_or(activation.avm2().classes().object)
-                    .as_class()
+                    .as_class_definition()
                     .ok_or(format!(
                         "Cannot apply class {:?} with non-class parameter",
                         self_class.read().name()
@@ -585,7 +594,8 @@ impl<'gc> TObject<'gc> for ClassObject<'gc> {
             ScriptObject::bare_object(activation.context.gc_context)
         };
 
-        let fn_proto = activation.avm2().prototypes().function;
+        let class_class = activation.avm2().classes().class;
+        let class_class_proto = activation.avm2().prototypes().class;
 
         let constructor = self.0.read().constructor.clone();
         let native_constructor = self.0.read().native_constructor.clone();
@@ -593,7 +603,7 @@ impl<'gc> TObject<'gc> for ClassObject<'gc> {
         let mut class_object = ClassObject(GcCell::allocate(
             activation.context.gc_context,
             ClassObjectData {
-                base: ScriptObjectData::base_new(Some(fn_proto), None),
+                base: ScriptObjectData::base_new(Some(class_class_proto), Some(class_class)),
                 class: parameterized_class,
                 scope,
                 superclass_object,
@@ -602,12 +612,14 @@ impl<'gc> TObject<'gc> for ClassObject<'gc> {
                 native_constructor,
                 params: Some(object_params[0]),
                 applications: HashMap::new(),
+                interfaces: Vec::new(),
             },
         ));
 
         class_object.link_prototype(activation, class_proto)?;
         class_object.link_interfaces(activation)?;
         class_object.install_traits(activation, parameterized_class.read().class_traits())?;
+        class_object.install_instance_traits(activation, class_class)?;
         class_object.run_class_initializer(activation)?;
 
         self.0

@@ -40,8 +40,8 @@ pub use crate::display_object::container::{
     DisplayObjectContainer, Lists, TDisplayObjectContainer,
 };
 use crate::events::{ClipEvent, ClipEventResult};
-pub use avm1_button::Avm1Button;
-pub use avm2_button::{Avm2Button, ButtonTracking};
+pub use avm1_button::{Avm1Button, ButtonState, ButtonTracking};
+pub use avm2_button::Avm2Button;
 pub use bitmap::Bitmap;
 pub use edit_text::{AutoSizeMode, EditText, TextSelection};
 pub use graphic::Graphic;
@@ -1071,6 +1071,9 @@ pub trait TDisplayObject<'gc>:
         None
     }
     fn as_drawing(&self, _gc_context: MutationContext<'gc, '_>) -> Option<RefMut<'_, Drawing>> {
+        None
+    }
+    fn as_bitmap(self) -> Option<Bitmap<'gc>> {
         None
     }
 

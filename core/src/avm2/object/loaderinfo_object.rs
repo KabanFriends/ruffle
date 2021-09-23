@@ -1,15 +1,14 @@
 //! Loader-info object
 
 use crate::avm2::activation::Activation;
-use crate::avm2::class::Class;
 use crate::avm2::names::{Namespace, QName};
 use crate::avm2::object::script_object::ScriptObjectData;
 use crate::avm2::object::{Object, ObjectPtr, TObject};
 use crate::avm2::scope::Scope;
-use crate::avm2::string::AvmString;
 use crate::avm2::value::Value;
 use crate::avm2::Error;
 use crate::display_object::DisplayObject;
+use crate::string::AvmString;
 use crate::tag_utils::SwfMovie;
 use crate::{
     impl_avm2_custom_object, impl_avm2_custom_object_instance, impl_avm2_custom_object_properties,
@@ -124,7 +123,7 @@ impl<'gc> TObject<'gc> for LoaderInfoObject<'gc> {
     impl_avm2_custom_object_instance!(base);
 
     fn value_of(&self, mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
-        if let Some(class) = self.as_class() {
+        if let Some(class) = self.instance_of_class_definition() {
             Ok(AvmString::new(mc, format!("[object {}]", class.read().name().local_name())).into())
         } else {
             Ok("[object Object]".into())

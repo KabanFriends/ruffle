@@ -1,16 +1,15 @@
 //! AVM2 object impl for the display hierarchy.
 
 use crate::avm2::activation::Activation;
-use crate::avm2::class::Class;
 use crate::avm2::function::Executable;
 use crate::avm2::names::{Namespace, QName};
 use crate::avm2::object::script_object::ScriptObjectData;
 use crate::avm2::object::{Object, ObjectPtr, TObject};
 use crate::avm2::scope::Scope;
-use crate::avm2::string::AvmString;
 use crate::avm2::value::Value;
 use crate::avm2::Error;
 use crate::display_object::DisplayObject;
+use crate::string::AvmString;
 use gc_arena::{Collect, GcCell, MutationContext};
 
 /// A class instance allocator that allocates Stage objects.
@@ -286,16 +285,8 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
         None
     }
 
-    fn as_class(&self) -> Option<GcCell<'gc, Class<'gc>>> {
-        self.0.read().base.as_class()
-    }
-
-    fn as_class_object(&self) -> Option<Object<'gc>> {
-        self.0.read().base.as_class_object()
-    }
-
-    fn set_class_object(self, mc: MutationContext<'gc, '_>, class_object: Object<'gc>) {
-        self.0.write(mc).base.set_class_object(class_object);
+    fn instance_of(&self) -> Option<Object<'gc>> {
+        self.0.read().base.instance_of()
     }
 
     fn as_display_object(&self) -> Option<DisplayObject<'gc>> {
@@ -411,13 +402,5 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
             .write(mc)
             .base
             .install_const(name, id, value, is_final)
-    }
-
-    fn interfaces(&self) -> Vec<Object<'gc>> {
-        self.0.read().base.interfaces()
-    }
-
-    fn set_interfaces(&self, gc_context: MutationContext<'gc, '_>, iface_list: Vec<Object<'gc>>) {
-        self.0.write(gc_context).base.set_interfaces(iface_list)
     }
 }

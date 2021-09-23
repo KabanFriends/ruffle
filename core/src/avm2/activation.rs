@@ -10,10 +10,10 @@ use crate::avm2::object::{
 use crate::avm2::object::{Object, TObject};
 use crate::avm2::scope::Scope;
 use crate::avm2::script::Script;
-use crate::avm2::string::AvmString;
 use crate::avm2::value::Value;
 use crate::avm2::{value, Avm2, Error};
 use crate::context::UpdateContext;
+use crate::string::AvmString;
 use crate::swf::extensions::ReadSwfExt;
 use gc_arena::{Gc, GcCell, MutationContext};
 use smallvec::SmallVec;
@@ -216,7 +216,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             .ok_or_else(|| format!("Could not resolve parameter type {:?}", type_name))?
             .coerce_to_object(self)?;
 
-        if class.as_class().is_none() {
+        if class.as_class_object().is_none() {
             return Err(format!("Resolved parameter type {:?} is not a class", type_name).into());
         }
 
@@ -502,6 +502,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     ) -> Result<Value<'gc>, Error> {
         let superclass_object: Result<Object<'gc>, Error> = self
             .subclass_object()
+            .and_then(|c| c.as_class_object())
             .and_then(|c| c.superclass_object())
             .ok_or_else(|| {
                 "Attempted to call super constructor without a superclass."
@@ -805,7 +806,12 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                 Op::ApplyType { num_types } => self.op_apply_type(num_types),
                 Op::NewArray { num_args } => self.op_new_array(num_args),
                 Op::CoerceA => self.op_coerce_a(),
+                Op::CoerceB => self.op_coerce_b(),
+                Op::CoerceD => self.op_coerce_d(),
+                Op::CoerceI => self.op_coerce_i(),
+                Op::CoerceO => self.op_coerce_o(),
                 Op::CoerceS => self.op_coerce_s(),
+                Op::CoerceU => self.op_coerce_u(),
                 Op::ConvertB => self.op_convert_b(),
                 Op::ConvertI => self.op_convert_i(),
                 Op::ConvertD => self.op_convert_d(),
@@ -881,6 +887,9 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                 } => self.op_debug(method, is_local_register, register_name, register),
                 Op::DebugFile { file_name } => self.op_debug_file(method, file_name),
                 Op::DebugLine { line_num } => self.op_debug_line(line_num),
+                Op::Bkpt => self.op_bkpt(),
+                Op::BkptLine { line_num } => self.op_bkpt_line(line_num),
+                Op::Timestamp => self.op_timestamp(),
                 Op::TypeOf => self.op_type_of(),
                 Op::EscXAttr => self.op_esc_xattr(),
                 Op::EscXElem => self.op_esc_elem(),
@@ -1098,7 +1107,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             .resolve_multiname(&multiname)?
             .ok_or_else(|| format!("Could not find method {:?}", multiname.local_name()).into());
         let name = name?;
-        let superclass_object = if let Some(c) = receiver.as_class_object() {
+        let superclass_object = if let Some(c) = receiver.instance_of() {
             c.find_class_for_trait(&name)?
         } else {
             None
@@ -1148,7 +1157,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             .resolve_multiname(&multiname)?
             .ok_or_else(|| format!("Could not find method {:?}", multiname.local_name()).into());
         let name = name?;
-        let superclass_object = if let Some(c) = receiver.as_class_object() {
+        let superclass_object = if let Some(c) = receiver.instance_of() {
             c.find_class_for_trait(&name)?
         } else {
             None
@@ -1173,7 +1182,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         let method = self.table_method(method, index, false)?;
         let scope = self.scope(); //TODO: Is this correct?
         let function = FunctionObject::from_method(self, method.into(), scope, None);
-        let value = function.call(Some(receiver), &args, self, receiver.as_class_object())?;
+        let value = function.call(Some(receiver), &args, self, receiver.instance_of())?;
 
         self.context.avm2.push(value);
 
@@ -1197,6 +1206,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
         let superclass_object: Result<Object<'gc>, Error> = self
             .subclass_object()
+            .and_then(|c| c.as_class_object())
             .and_then(|bc| bc.superclass_object())
             .ok_or_else(|| {
                 "Attempted to call super method without a superclass."
@@ -1229,6 +1239,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
         let superclass_object: Result<Object<'gc>, Error> = self
             .subclass_object()
+            .and_then(|c| c.as_class_object())
             .and_then(|bc| bc.superclass_object())
             .ok_or_else(|| {
                 "Attempted to call super method without a superclass."
@@ -1268,7 +1279,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         // dynamic properties not yet set
         if name.is_err()
             && !object
-                .as_class()
+                .instance_of_class_definition()
                 .map(|c| c.read().is_sealed())
                 .unwrap_or(false)
         {
@@ -1346,7 +1357,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             // Unknown properties on a dynamic class delete successfully.
             self.context.avm2.push(
                 !object
-                    .as_class()
+                    .instance_of_class_definition()
                     .map(|c| c.read().is_sealed())
                     .unwrap_or(false),
             )
@@ -1370,6 +1381,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
         let superclass_object: Result<Object<'gc>, Error> = self
             .subclass_object()
+            .and_then(|c| c.as_class_object())
             .and_then(|bc| bc.superclass_object())
             .ok_or_else(|| {
                 "Attempted to call super method without a superclass."
@@ -1401,6 +1413,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
         let superclass_object: Result<Object<'gc>, Error> = self
             .subclass_object()
+            .and_then(|c| c.as_class_object())
             .and_then(|bc| bc.superclass_object())
             .ok_or_else(|| {
                 "Attempted to call super method without a superclass."
@@ -1726,6 +1739,43 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         Ok(FrameControl::Continue)
     }
 
+    fn op_coerce_b(&mut self) -> Result<FrameControl<'gc>, Error> {
+        let value = self.context.avm2.pop().coerce_to_boolean();
+
+        self.context.avm2.push(value);
+
+        Ok(FrameControl::Continue)
+    }
+
+    fn op_coerce_d(&mut self) -> Result<FrameControl<'gc>, Error> {
+        let value = self.context.avm2.pop().coerce_to_number(self)?;
+
+        self.context.avm2.push(value);
+
+        Ok(FrameControl::Continue)
+    }
+
+    fn op_coerce_i(&mut self) -> Result<FrameControl<'gc>, Error> {
+        let value = self.context.avm2.pop().coerce_to_i32(self)?;
+
+        self.context.avm2.push(value);
+
+        Ok(FrameControl::Continue)
+    }
+
+    fn op_coerce_o(&mut self) -> Result<FrameControl<'gc>, Error> {
+        let value = self.context.avm2.pop();
+
+        let coerced = match value {
+            Value::Undefined | Value::Null => Value::Null,
+            _ => value.coerce_to_object(self)?.into(),
+        };
+
+        self.context.avm2.push(coerced);
+
+        Ok(FrameControl::Continue)
+    }
+
     fn op_coerce_s(&mut self) -> Result<FrameControl<'gc>, Error> {
         let value = self.context.avm2.pop();
 
@@ -1735,6 +1785,14 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         };
 
         self.context.avm2.push(coerced);
+
+        Ok(FrameControl::Continue)
+    }
+
+    fn op_coerce_u(&mut self) -> Result<FrameControl<'gc>, Error> {
+        let value = self.context.avm2.pop().coerce_to_u32(self)?;
+
+        self.context.avm2.push(value);
 
         Ok(FrameControl::Continue)
     }
@@ -2501,7 +2559,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         });
         let class = found?.coerce_to_object(self)?;
 
-        if class.as_class().is_none() {
+        if class.as_class_object().is_none() {
             return Err("TypeError: The right-hand side of operator must be a class.".into());
         }
 
@@ -2518,7 +2576,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         let class = self.context.avm2.pop().coerce_to_object(self)?;
         let value = self.context.avm2.pop().coerce_to_object(self)?;
 
-        if class.as_class().is_none() {
+        if class.as_class_object().is_none() {
             return Err("TypeError: The right-hand side of operator must be a class.".into());
         }
 
@@ -2941,6 +2999,21 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     fn op_debug_line(&mut self, line_num: u32) -> Result<FrameControl<'gc>, Error> {
         avm_debug!(self.avm2(), "Line: {}", line_num);
 
+        Ok(FrameControl::Continue)
+    }
+
+    fn op_bkpt(&mut self) -> Result<FrameControl<'gc>, Error> {
+        // while a debugger is not attached, this is a no-op
+        Ok(FrameControl::Continue)
+    }
+
+    fn op_bkpt_line(&mut self, _line_num: u32) -> Result<FrameControl<'gc>, Error> {
+        // while a debugger is not attached, this is a no-op
+        Ok(FrameControl::Continue)
+    }
+
+    fn op_timestamp(&mut self) -> Result<FrameControl<'gc>, Error> {
+        // while a debugger is not attached, this is a no-op
         Ok(FrameControl::Continue)
     }
 }
