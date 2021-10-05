@@ -2,6 +2,7 @@
 
 use crate::avm2::activation::Activation;
 use crate::avm2::script::TranslationUnit;
+use crate::avm2::value::Value;
 use crate::avm2::Error;
 use crate::string::AvmString;
 use gc_arena::{Collect, MutationContext};
@@ -226,6 +227,35 @@ impl<'gc> QName<'gc> {
     pub fn namespace(&self) -> &Namespace<'gc> {
         &self.ns
     }
+
+    /// Get the string value of this QName, including the namespace URI.
+    pub fn as_uri(&self, mc: MutationContext<'gc, '_>) -> AvmString<'gc> {
+        match self.ns {
+            Namespace::Namespace(s) if s != "" => {
+                AvmString::new(mc, format!("{}::{}", &*s, &*self.name))
+            }
+            Namespace::Package(s) if s != "" => {
+                AvmString::new(mc, format!("{}::{}", &*s, &*self.name))
+            }
+            Namespace::PackageInternal(s) if s != "" => {
+                AvmString::new(mc, format!("{}::{}", &*s, &*self.name))
+            }
+            Namespace::Protected(s) if s != "" => {
+                AvmString::new(mc, format!("{}::{}", &*s, &*self.name))
+            }
+            Namespace::Explicit(s) if s != "" => {
+                AvmString::new(mc, format!("{}::{}", &*s, &*self.name))
+            }
+            Namespace::StaticProtected(s) if s != "" => {
+                AvmString::new(mc, format!("{}::{}", &*s, &*self.name))
+            }
+            Namespace::Private(s) if s != "" => {
+                AvmString::new(mc, format!("{}::{}", &*s, &*self.name))
+            }
+            Namespace::Any => AvmString::new(mc, format!("*::{}", &*self.name)),
+            _ => self.name,
+        }
+    }
 }
 
 /// A `Multiname` consists of a name which could be resolved in one or more
@@ -283,6 +313,31 @@ impl<'gc> Multiname<'gc> {
         }
 
         Ok(result)
+    }
+
+    /// Assemble a multiname from an ABC `MultinameL` and the late-bound name.
+    ///
+    /// Intended for use by code that wants to inspect the late-bound name's
+    /// value first before using standard namespace lookup.
+    pub fn from_multiname_late(
+        translation_unit: TranslationUnit<'gc>,
+        abc_multiname: &AbcMultiname,
+        name: Value<'gc>,
+        activation: &mut Activation<'_, 'gc, '_>,
+    ) -> Result<Self, Error> {
+        match abc_multiname {
+            AbcMultiname::MultinameL { namespace_set }
+            | AbcMultiname::MultinameLA { namespace_set } => Ok(Self {
+                ns: Self::abc_namespace_set(
+                    translation_unit,
+                    namespace_set.clone(),
+                    activation.context.gc_context,
+                )?,
+                name: Some(name.coerce_to_string(activation)?),
+                params: Vec::new(),
+            }),
+            _ => Err("Cannot assemble early-bound multinames using from_multiname_late".into()),
+        }
     }
 
     /// Resolve an ABC multiname's parameters and yields an AVM multiname with
@@ -345,18 +400,9 @@ impl<'gc> Multiname<'gc> {
                 name: translation_unit.pool_string_option(name.0, activation.context.gc_context)?,
                 params: Vec::new(),
             },
-            AbcMultiname::MultinameL { namespace_set }
-            | AbcMultiname::MultinameLA { namespace_set } => {
-                let name = activation.avm2().pop().coerce_to_string(activation)?;
-                Self {
-                    ns: Self::abc_namespace_set(
-                        translation_unit,
-                        namespace_set.clone(),
-                        activation.context.gc_context,
-                    )?,
-                    name: Some(name),
-                    params: Vec::new(),
-                }
+            AbcMultiname::MultinameL { .. } | AbcMultiname::MultinameLA { .. } => {
+                let name = activation.avm2().pop();
+                Self::from_multiname_late(translation_unit, abc_multiname, name, activation)?
             }
             AbcMultiname::TypeName { .. } => {
                 return Err("Recursive TypeNames are not supported!".into())

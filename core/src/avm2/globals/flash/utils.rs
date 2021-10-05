@@ -7,6 +7,7 @@ use crate::string::AvmString;
 
 pub mod bytearray;
 pub mod compression_algorithm;
+pub mod dictionary;
 pub mod endian;
 
 /// Implements `flash.utils.getTimer`
@@ -32,7 +33,7 @@ pub fn get_qualified_class_name<'gc>(
     let class = match obj.as_class_object() {
         Some(class) => class,
         None => match obj.instance_of() {
-            Some(cls) => cls.as_class_object().unwrap(),
+            Some(cls) => cls,
             None => return Ok(Value::Null),
         },
     };
@@ -40,8 +41,7 @@ pub fn get_qualified_class_name<'gc>(
     Ok(AvmString::new(
         activation.context.gc_context,
         class
-            .as_class_definition()
-            .ok_or("This object does not have a class")?
+            .inner_class_definition()
             .read()
             .name()
             .to_qualified_name(),
@@ -63,7 +63,7 @@ pub fn get_qualified_super_class_name<'gc>(
     let class = match obj.as_class_object() {
         Some(class) => class,
         None => match obj.instance_of() {
-            Some(cls) => cls.as_class_object().unwrap(),
+            Some(cls) => cls,
             None => return Ok(Value::Null),
         },
     };
@@ -72,8 +72,7 @@ pub fn get_qualified_super_class_name<'gc>(
         Ok(AvmString::new(
             activation.context.gc_context,
             super_class
-                .as_class_definition()
-                .ok_or("This object does not have a class")?
+                .inner_class_definition()
                 .read()
                 .name()
                 .to_qualified_name(),

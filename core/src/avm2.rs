@@ -49,7 +49,9 @@ pub use crate::avm2::array::ArrayStorage;
 pub use crate::avm2::domain::Domain;
 pub use crate::avm2::events::Event;
 pub use crate::avm2::names::{Namespace, QName};
-pub use crate::avm2::object::{ArrayObject, Object, ScriptObject, StageObject, TObject};
+pub use crate::avm2::object::{
+    ArrayObject, ClassObject, Object, ScriptObject, StageObject, TObject,
+};
 pub use crate::avm2::value::Value;
 
 const BROADCAST_WHITELIST: [&str; 3] = ["enterFrame", "exitFrame", "frameConstructed"];
@@ -208,7 +210,7 @@ impl<'gc> Avm2<'gc> {
     pub fn broadcast_event(
         context: &mut UpdateContext<'_, 'gc, '_>,
         event: Event<'gc>,
-        on_type: Object<'gc>,
+        on_type: ClassObject<'gc>,
     ) -> Result<(), Error> {
         let event_name = event.event_type();
         if !BROADCAST_WHITELIST.iter().any(|x| *x == event_name) {
@@ -254,7 +256,7 @@ impl<'gc> Avm2<'gc> {
             reciever,
             args,
             &mut evt_activation,
-            reciever.and_then(|r| r.proto()),
+            reciever.and_then(|r| r.instance_of()),
         )?;
 
         Ok(())
@@ -292,7 +294,13 @@ impl<'gc> Avm2<'gc> {
 
     /// Push a value onto the operand stack.
     fn push(&mut self, value: impl Into<Value<'gc>>) {
-        let value = value.into();
+        let mut value = value.into();
+        if let Value::Object(o) = value {
+            if let Some(prim) = o.as_primitive() {
+                value = prim.clone();
+            }
+        }
+
         avm_debug!(self, "Stack push {}: {:?}", self.stack.len(), value);
         self.stack.push(value);
     }

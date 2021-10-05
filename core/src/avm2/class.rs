@@ -3,7 +3,7 @@
 use crate::avm2::activation::Activation;
 use crate::avm2::method::{Method, NativeMethodImpl};
 use crate::avm2::names::{Multiname, Namespace, QName};
-use crate::avm2::object::Object;
+use crate::avm2::object::{ClassObject, Object};
 use crate::avm2::script::TranslationUnit;
 use crate::avm2::traits::{Trait, TraitKind};
 use crate::avm2::value::Value;
@@ -50,7 +50,7 @@ bitflags! {
 ///  * `proto` - The prototype attached to the class object.
 ///  * `activation` - The current AVM2 activation.
 pub type AllocatorFn = for<'gc> fn(
-    Object<'gc>,
+    ClassObject<'gc>,
     Object<'gc>,
     &mut Activation<'_, 'gc, '_>,
 ) -> Result<Object<'gc>, Error>;
@@ -626,6 +626,19 @@ impl<'gc> Class<'gc> {
                 QName::new(Namespace::public(), name),
                 QName::new(Namespace::public(), "Number").into(),
                 value.map(|v| v.into()),
+            ));
+        }
+    }
+    #[inline(never)]
+    pub fn define_private_slot_instance_traits(
+        &mut self,
+        items: &[(&'static str, &'static str, &'static str, &'static str)],
+    ) {
+        for &(ns, name, type_ns, type_name) in items {
+            self.define_instance_trait(Trait::from_slot(
+                QName::new(Namespace::Private(ns.into()), name),
+                QName::new(Namespace::Package(type_ns.into()), type_name).into(),
+                None,
             ));
         }
     }

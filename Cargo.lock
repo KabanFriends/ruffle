@@ -99,9 +99,9 @@ dependencies = [
 
 [[package]]
 name = "arrayvec"
-version = "0.6.1"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "269d0f5e68353a7cab87f81e7c736adc008d279a36ebc6a05dfe01193a89f0c9"
+checksum = "be4dc07131ffa69b8072d35f5007352af944213cde02545e2103680baed38fcd"
 
 [[package]]
 name = "ash"
@@ -1851,9 +1851,9 @@ checksum = "90953f308a79fe6d62a4643e51f848fbfddcd05975a38e69fdf4ab86a7baf7ca"
 
 [[package]]
 name = "instant"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bee0328b1209d157ef001c94dd85b4f8f64139adb0eac2659f4b08382b2f474d"
+checksum = "716d3d89f35ac6a34fd0eed635395f4c3b76fa889338a4632e5231a8684216bd"
 dependencies = [
  "cfg-if 1.0.0",
  "js-sys",
@@ -2364,6 +2364,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "nihav_codec_support"
+version = "0.1.0"
+source = "git+https://github.com/ruffle-rs/nihav-vp6?rev=9416fcc9fc8aab8f4681aa9093b42922214abbd3#9416fcc9fc8aab8f4681aa9093b42922214abbd3"
+dependencies = [
+ "nihav_core",
+]
+
+[[package]]
+name = "nihav_core"
+version = "0.1.0"
+source = "git+https://github.com/ruffle-rs/nihav-vp6?rev=9416fcc9fc8aab8f4681aa9093b42922214abbd3#9416fcc9fc8aab8f4681aa9093b42922214abbd3"
+
+[[package]]
+name = "nihav_duck"
+version = "0.1.0"
+source = "git+https://github.com/ruffle-rs/nihav-vp6?rev=9416fcc9fc8aab8f4681aa9093b42922214abbd3#9416fcc9fc8aab8f4681aa9093b42922214abbd3"
+dependencies = [
+ "nihav_codec_support",
+ "nihav_core",
+]
+
+[[package]]
 name = "nix"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2777,9 +2799,9 @@ checksum = "ac74c624d6b2d21f425f752262f42188365d7b8ff1aff74c82e45136510a4857"
 
 [[package]]
 name = "pretty_assertions"
-version = "0.7.2"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cab0e7c02cf376875e9335e0ba1da535775beb5450d21e1dffca068818ed98b"
+checksum = "ec0cfe1b2403f172ba0f234e500906ee0a3e493fb81092dac23ebefe129301cc"
 dependencies = [
  "ansi_term",
  "ctor",
@@ -3070,6 +3092,9 @@ dependencies = [
  "lzma-rs",
  "minimp3",
  "nellymoser-rs",
+ "nihav_codec_support",
+ "nihav_core",
+ "nihav_duck",
  "num-derive",
  "num-traits",
  "percent-encoding",
@@ -3405,9 +3430,9 @@ dependencies = [
 
 [[package]]
 name = "smallvec"
-version = "1.6.1"
+version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe0f37c9e8f3c5a4a66ad655a93c74daac4ad00c441533bf5c6e7990bb42604e"
+checksum = "1ecab6c735a6bb4139c0caafd0cc3635748bbb3acf4550e8138122099251f309"
 
 [[package]]
 name = "smithay-client-toolkit"
@@ -3522,9 +3547,9 @@ dependencies = [
 
 [[package]]
 name = "symphonia"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fae959d5ea7b4cd0cd8db3b899ec4f549b0d8a298694826a36ae7e5f19d4aa6"
+checksum = "a7e5f38aa07e792f4eebb0faa93cee088ec82c48222dd332897aae1569d9a4b7"
 dependencies = [
  "lazy_static",
  "symphonia-bundle-mp3",
@@ -3534,9 +3559,9 @@ dependencies = [
 
 [[package]]
 name = "symphonia-bundle-mp3"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9f596fe16d2ae06e9404558644b61e27e2dcfee6c511f559be4699c403283fa"
+checksum = "ec4d97c4a61ece4651751dddb393ebecb7579169d9e758ae808fe507a5250790"
 dependencies = [
  "bitflags",
  "lazy_static",
@@ -3547,22 +3572,22 @@ dependencies = [
 
 [[package]]
 name = "symphonia-core"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1742e06f50b4a7ed7abee53433231e050a248b498cd0ae2c639c8a70b115001"
+checksum = "fa135e97be0f4a666c31dfe5ef4c75435ba3d355fd6a73d2100aa79b14c104c9"
 dependencies = [
- "arrayvec 0.6.1",
+ "arrayvec 0.7.1",
  "bitflags",
- "byteorder",
+ "bytemuck",
  "lazy_static",
  "log",
 ]
 
 [[package]]
 name = "symphonia-metadata"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db5e36e38a7400f968569135e7ac0f8647de42e93905ad41c79d583aaeae565c"
+checksum = "5260599daba18d8fe905ca3eb3b42ba210529a6276886632412cc74984e79b1a"
 dependencies = [
  "encoding_rs",
  "lazy_static",
@@ -3572,9 +3597,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "1.0.76"
+version = "1.0.78"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6f107db402c2c2055242dbf4d2af0e69197202e9faacbef9571bbe47f5a1b84"
+checksum = "a4eac2e6c19f5c3abc0c229bea31ff0b9b091c7b14990e8924b92902a303a0c0"
 dependencies = [
  "proc-macro2",
  "quote",

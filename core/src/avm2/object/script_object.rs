@@ -2,7 +2,7 @@
 
 use crate::avm2::activation::Activation;
 use crate::avm2::names::{Namespace, QName};
-use crate::avm2::object::{Object, ObjectPtr, TObject};
+use crate::avm2::object::{ClassObject, Object, ObjectPtr, TObject};
 use crate::avm2::property::Property;
 use crate::avm2::property_map::PropertyMap;
 use crate::avm2::return_value::ReturnValue;
@@ -12,12 +12,13 @@ use crate::avm2::value::Value;
 use crate::avm2::Error;
 use crate::string::AvmString;
 use gc_arena::{Collect, GcCell, MutationContext};
+use std::cell::{Ref, RefMut};
 use std::collections::HashMap;
 use std::fmt::Debug;
 
 /// A class instance allocator that allocates `ScriptObject`s.
 pub fn scriptobject_allocator<'gc>(
-    class: Object<'gc>,
+    class: ClassObject<'gc>,
     proto: Object<'gc>,
     activation: &mut Activation<'_, 'gc, '_>,
 ) -> Result<Object<'gc>, Error> {
@@ -53,159 +54,19 @@ pub struct ScriptObjectData<'gc> {
 
     /// The class object that this is an instance of.
     /// If `None`, this is either a class itself, or not an ES4 object at all.
-    instance_of: Option<Object<'gc>>,
+    instance_of: Option<ClassObject<'gc>>,
 
     /// Enumeratable property names.
     enumerants: Vec<QName<'gc>>,
 }
 
 impl<'gc> TObject<'gc> for ScriptObject<'gc> {
-    fn get_property_local(
-        self,
-        receiver: Object<'gc>,
-        name: &QName<'gc>,
-        activation: &mut Activation<'_, 'gc, '_>,
-    ) -> Result<Value<'gc>, Error> {
-        let rv = self
-            .0
-            .read()
-            .get_property_local(receiver, name, activation)?;
-
-        rv.resolve(activation)
+    fn base(&self) -> Ref<ScriptObjectData<'gc>> {
+        self.0.read()
     }
 
-    fn set_property_local(
-        self,
-        receiver: Object<'gc>,
-        name: &QName<'gc>,
-        value: Value<'gc>,
-        activation: &mut Activation<'_, 'gc, '_>,
-    ) -> Result<(), Error> {
-        let rv = self
-            .0
-            .write(activation.context.gc_context)
-            .set_property_local(receiver, name, value, activation)?;
-
-        rv.resolve(activation)?;
-
-        Ok(())
-    }
-
-    fn init_property_local(
-        self,
-        receiver: Object<'gc>,
-        name: &QName<'gc>,
-        value: Value<'gc>,
-        activation: &mut Activation<'_, 'gc, '_>,
-    ) -> Result<(), Error> {
-        let rv = self
-            .0
-            .write(activation.context.gc_context)
-            .init_property_local(receiver, name, value, activation)?;
-
-        rv.resolve(activation)?;
-
-        Ok(())
-    }
-
-    fn is_property_overwritable(
-        self,
-        gc_context: MutationContext<'gc, '_>,
-        name: &QName<'gc>,
-    ) -> bool {
-        self.0.write(gc_context).is_property_overwritable(name)
-    }
-
-    fn is_property_final(self, name: &QName<'gc>) -> bool {
-        self.0.read().is_property_final(name)
-    }
-
-    fn delete_property(&self, gc_context: MutationContext<'gc, '_>, name: &QName<'gc>) -> bool {
-        self.0.write(gc_context).delete_property(name)
-    }
-
-    fn get_slot(self, id: u32) -> Result<Value<'gc>, Error> {
-        self.0.read().get_slot(id)
-    }
-
-    fn set_slot(
-        self,
-        id: u32,
-        value: Value<'gc>,
-        mc: MutationContext<'gc, '_>,
-    ) -> Result<(), Error> {
-        self.0.write(mc).set_slot(id, value, mc)
-    }
-
-    fn init_slot(
-        self,
-        id: u32,
-        value: Value<'gc>,
-        mc: MutationContext<'gc, '_>,
-    ) -> Result<(), Error> {
-        self.0.write(mc).init_slot(id, value, mc)
-    }
-
-    fn get_method(self, id: u32) -> Option<Object<'gc>> {
-        self.0.read().get_method(id)
-    }
-
-    fn get_scope(self) -> Option<GcCell<'gc, Scope<'gc>>> {
-        self.0.read().get_scope()
-    }
-
-    fn resolve_any(self, local_name: AvmString<'gc>) -> Result<Option<Namespace<'gc>>, Error> {
-        self.0.read().resolve_any(local_name)
-    }
-
-    fn resolve_any_trait(
-        self,
-        local_name: AvmString<'gc>,
-    ) -> Result<Option<Namespace<'gc>>, Error> {
-        self.0.read().resolve_any_trait(local_name)
-    }
-
-    fn has_own_property(self, name: &QName<'gc>) -> Result<bool, Error> {
-        self.0.read().has_own_property(name)
-    }
-
-    fn has_trait(self, name: &QName<'gc>) -> Result<bool, Error> {
-        self.0.read().has_trait(name)
-    }
-
-    fn has_own_virtual_getter(self, name: &QName<'gc>) -> bool {
-        self.0.read().has_own_virtual_getter(name)
-    }
-
-    fn has_own_virtual_setter(self, name: &QName<'gc>) -> bool {
-        self.0.read().has_own_virtual_setter(name)
-    }
-
-    fn proto(&self) -> Option<Object<'gc>> {
-        self.0.read().proto
-    }
-
-    fn set_proto(self, mc: MutationContext<'gc, '_>, proto: Object<'gc>) {
-        self.0.write(mc).set_proto(proto)
-    }
-
-    fn get_enumerant_name(&self, index: u32) -> Option<QName<'gc>> {
-        self.0.read().get_enumerant_name(index)
-    }
-
-    fn property_is_enumerable(&self, name: &QName<'gc>) -> bool {
-        self.0.read().property_is_enumerable(name)
-    }
-
-    fn set_local_property_is_enumerable(
-        &self,
-        mc: MutationContext<'gc, '_>,
-        name: &QName<'gc>,
-        is_enumerable: bool,
-    ) -> Result<(), Error> {
-        self.0
-            .write(mc)
-            .set_local_property_is_enumerable(name, is_enumerable)
+    fn base_mut(&self, mc: MutationContext<'gc, '_>) -> RefMut<ScriptObjectData<'gc>> {
+        self.0.write(mc)
     }
 
     fn as_ptr(&self) -> *const ObjectPtr {
@@ -217,90 +78,8 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         Ok(ScriptObject::object(activation.context.gc_context, this))
     }
 
-    fn to_string(&self, mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
-        if let Some(class) = self.instance_of_class_definition() {
-            Ok(AvmString::new(mc, format!("[object {}]", class.read().name().local_name())).into())
-        } else {
-            Ok("[object Object]".into())
-        }
-    }
-
     fn value_of(&self, _mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
         Ok(Value::Object(Object::from(*self)))
-    }
-
-    fn install_method(
-        &mut self,
-        mc: MutationContext<'gc, '_>,
-        name: QName<'gc>,
-        disp_id: u32,
-        function: Object<'gc>,
-        is_final: bool,
-    ) {
-        self.0
-            .write(mc)
-            .install_method(name, disp_id, function, is_final)
-    }
-
-    fn install_getter(
-        &mut self,
-        mc: MutationContext<'gc, '_>,
-        name: QName<'gc>,
-        disp_id: u32,
-        function: Object<'gc>,
-        is_final: bool,
-    ) -> Result<(), Error> {
-        self.0
-            .write(mc)
-            .install_getter(name, disp_id, function, is_final)
-    }
-
-    fn install_setter(
-        &mut self,
-        mc: MutationContext<'gc, '_>,
-        name: QName<'gc>,
-        disp_id: u32,
-        function: Object<'gc>,
-        is_final: bool,
-    ) -> Result<(), Error> {
-        self.0
-            .write(mc)
-            .install_setter(name, disp_id, function, is_final)
-    }
-
-    fn install_dynamic_property(
-        &mut self,
-        mc: MutationContext<'gc, '_>,
-        name: QName<'gc>,
-        value: Value<'gc>,
-    ) -> Result<(), Error> {
-        self.0.write(mc).install_dynamic_property(name, value)
-    }
-
-    fn install_slot(
-        &mut self,
-        mc: MutationContext<'gc, '_>,
-        name: QName<'gc>,
-        id: u32,
-        value: Value<'gc>,
-        is_final: bool,
-    ) {
-        self.0.write(mc).install_slot(name, id, value, is_final)
-    }
-
-    fn install_const(
-        &mut self,
-        mc: MutationContext<'gc, '_>,
-        name: QName<'gc>,
-        id: u32,
-        value: Value<'gc>,
-        is_final: bool,
-    ) {
-        self.0.write(mc).install_const(name, id, value, is_final)
-    }
-
-    fn instance_of(&self) -> Option<Object<'gc>> {
-        self.0.read().instance_of()
     }
 }
 
@@ -325,7 +104,7 @@ impl<'gc> ScriptObject<'gc> {
     /// Construct an instance with a class and scope stack.
     pub fn instance(
         mc: MutationContext<'gc, '_>,
-        class: Object<'gc>,
+        class: ClassObject<'gc>,
         proto: Object<'gc>,
     ) -> Object<'gc> {
         ScriptObject(GcCell::allocate(
@@ -337,7 +116,7 @@ impl<'gc> ScriptObject<'gc> {
 }
 
 impl<'gc> ScriptObjectData<'gc> {
-    pub fn base_new(proto: Option<Object<'gc>>, instance_of: Option<Object<'gc>>) -> Self {
+    pub fn base_new(proto: Option<Object<'gc>>, instance_of: Option<ClassObject<'gc>>) -> Self {
         ScriptObjectData {
             values: HashMap::new(),
             slots: Vec::new(),
@@ -359,12 +138,10 @@ impl<'gc> ScriptObjectData<'gc> {
         if let Some(prop) = prop {
             prop.get(
                 receiver,
-                Some(
-                    activation
-                        .subclass_object()
-                        .or_else(|| self.instance_of())
-                        .unwrap_or(receiver),
-                ),
+                // TODO: This used to also .unwrap_or(receiver),
+                // but this no longer can be done as it's not a ClassObject.
+                // Despite this, somehow, no tests fail.
+                activation.subclass_object().or_else(|| self.instance_of()),
             )
         } else {
             Ok(Value::Undefined.into())
@@ -396,7 +173,10 @@ impl<'gc> ScriptObjectData<'gc> {
             let prop = self.values.get_mut(name).unwrap();
             prop.set(
                 receiver,
-                Some(activation.subclass_object().or(class).unwrap_or(receiver)),
+                // TODO: This used to also .unwrap_or(receiver),
+                // but this no longer can be done as it's not a ClassObject.
+                // Despite this, somehow, no tests fail.
+                activation.subclass_object().or(class),
                 value,
             )
         } else {
@@ -424,7 +204,10 @@ impl<'gc> ScriptObjectData<'gc> {
             } else {
                 prop.init(
                     receiver,
-                    Some(activation.subclass_object().or(class).unwrap_or(receiver)),
+                    // TODO: This used to also .unwrap_or(receiver),
+                    // but this no longer can be done as it's not a ClassObject.
+                    // Despite this, somehow, no tests fail.
+                    activation.subclass_object().or(class),
                     value,
                 )
             }
@@ -511,14 +294,11 @@ impl<'gc> ScriptObjectData<'gc> {
                 let mut cur_class = Some(class);
 
                 while let Some(class) = cur_class {
-                    let cur_static_class = class
-                        .as_class_definition()
-                        .ok_or("Object is not a class constructor")?;
+                    let cur_static_class = class.inner_class_definition();
                     if cur_static_class.read().has_instance_trait(name) {
                         return Ok(true);
                     }
 
-                    let class = class.as_class_object().unwrap();
                     cur_class = class.superclass_object();
                 }
 
@@ -572,9 +352,7 @@ impl<'gc> ScriptObjectData<'gc> {
                 let mut cur_class = Some(*class);
 
                 while let Some(class) = cur_class {
-                    let cur_static_class = class
-                        .as_class_definition()
-                        .ok_or("Object is not a class constructor")?;
+                    let cur_static_class = class.inner_class_definition();
                     if let Some(ns) = cur_static_class
                         .read()
                         .resolve_any_instance_trait(local_name)
@@ -582,7 +360,6 @@ impl<'gc> ScriptObjectData<'gc> {
                         return Ok(Some(ns));
                     }
 
-                    let class = class.as_class_object().unwrap();
                     cur_class = class.superclass_object();
                 }
 
@@ -618,7 +395,7 @@ impl<'gc> ScriptObjectData<'gc> {
         self.proto = Some(proto)
     }
 
-    pub fn get_enumerant_name(&self, index: u32) -> Option<QName<'gc>> {
+    pub fn get_enumerant_name(&self, index: u32) -> Option<Value<'gc>> {
         // NOTE: AVM2 object enumeration is one of the weakest parts of an
         // otherwise well-designed VM. Notably, because of the way they
         // implemented `hasnext` and `hasnext2`, all enumerants start from ONE.
@@ -627,7 +404,10 @@ impl<'gc> ScriptObjectData<'gc> {
         // sentinel.
         let true_index = (index as usize).checked_sub(1)?;
 
-        self.enumerants.get(true_index).cloned()
+        self.enumerants
+            .get(true_index)
+            .cloned()
+            .map(|q| q.local_name().into())
     }
 
     pub fn property_is_enumerable(&self, name: &QName<'gc>) -> bool {
@@ -660,6 +440,14 @@ impl<'gc> ScriptObjectData<'gc> {
         }
 
         Ok(())
+    }
+
+    /// Get the end of (standard) enumerant space.
+    ///
+    /// Intended for objects that need to extend enumerant space. The index
+    /// returned is guaranteed to be unused by the base enumerant list.
+    pub fn get_last_enumerant(&self) -> u32 {
+        (self.enumerants.len() as u32).saturating_add(1)
     }
 
     /// Install a method into the object.
@@ -761,14 +549,13 @@ impl<'gc> ScriptObjectData<'gc> {
         value: Value<'gc>,
     ) -> Result<(), Error> {
         if let Some(class) = self.instance_of() {
-            if let Some(class) = class.as_class_definition() {
-                if class.read().is_sealed() {
-                    return Err(format!(
-                        "Objects of type {:?} are not dynamic",
-                        class.read().name().local_name()
-                    )
-                    .into());
-                }
+            let class = class.inner_class_definition();
+            if class.read().is_sealed() {
+                return Err(format!(
+                    "Objects of type {:?} are not dynamic",
+                    class.read().name().local_name()
+                )
+                .into());
             }
         }
 
@@ -821,12 +608,12 @@ impl<'gc> ScriptObjectData<'gc> {
     }
 
     /// Get the class object for this object, if it has one.
-    pub fn instance_of(&self) -> Option<Object<'gc>> {
+    pub fn instance_of(&self) -> Option<ClassObject<'gc>> {
         self.instance_of
     }
 
     /// Set the class object for this object.
-    pub fn set_instance_of(&mut self, instance_of: Object<'gc>) {
+    pub fn set_instance_of(&mut self, instance_of: ClassObject<'gc>) {
         self.instance_of = Some(instance_of);
     }
 }

@@ -31,8 +31,31 @@ pub fn class_init<'gc>(
 ) -> Result<Value<'gc>, Error> {
     if let Some(this) = this {
         let mut function_proto = this
-            .get_property(this, &QName::dynamic_name("prototype"), activation)?
+            .get_property(this, &QName::dynamic_name("prototype").into(), activation)?
             .coerce_to_object(activation)?;
+
+        function_proto.install_dynamic_property(
+            activation.context.gc_context,
+            QName::new(Namespace::public(), "call"),
+            FunctionObject::from_method(
+                activation,
+                Method::from_builtin(call, "call", activation.context.gc_context),
+                None,
+                None,
+            )
+            .into(),
+        )?;
+        function_proto.install_dynamic_property(
+            activation.context.gc_context,
+            QName::new(Namespace::public(), "apply"),
+            FunctionObject::from_method(
+                activation,
+                Method::from_builtin(apply, "apply", activation.context.gc_context),
+                None,
+                None,
+            )
+            .into(),
+        )?;
 
         function_proto.install_dynamic_property(
             activation.context.gc_context,
@@ -69,7 +92,7 @@ fn call<'gc>(
     let this = args
         .get(0)
         .and_then(|v| v.coerce_to_object(activation).ok());
-    let base_proto = this.and_then(|that| that.proto());
+    let base_proto = this.and_then(|that| that.instance_of());
 
     if let Some(func) = func {
         if args.len() > 1 {
@@ -91,7 +114,7 @@ fn apply<'gc>(
     let this = args
         .get(0)
         .and_then(|v| v.coerce_to_object(activation).ok());
-    let base_proto = this.and_then(|that| that.proto());
+    let base_proto = this.and_then(|that| that.instance_of());
 
     if let Some(func) = func {
         let arg_array = args

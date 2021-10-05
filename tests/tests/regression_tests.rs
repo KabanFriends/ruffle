@@ -81,6 +81,7 @@ macro_rules! swf_tests_approx {
     ($($(#[$attr:meta])* ($name:ident, $path:expr, $num_frames:literal $(, $opt:ident = $val:expr)*),)*) => {
         $(
         #[test]
+        #[allow(clippy::if_then_panic)] // TODO: Remove when https://github.com/brendanzab/approx/pull/72 is merged.
         $(#[$attr])*
         fn $name() -> Result<(), Error> {
             set_logger();
@@ -683,6 +684,16 @@ swf_tests! {
     (as3_string_match, "avm2/string_match", 1),
     (as3_string_slice_substr_substring, "avm2/string_slice_substr_substring", 1),
     (as3_class_is, "avm2/class_is", 1),
+    (as3_dictionary_access, "avm2/dictionary_access", 1),
+    (as3_dictionary_delete, "avm2/dictionary_delete", 1),
+    (as3_dictionary_hasownproperty, "avm2/dictionary_hasownproperty", 1),
+    (as3_dictionary_namespaces, "avm2/dictionary_namespaces", 1),
+    (as3_dictionary_in, "avm2/dictionary_in", 1),
+    (as3_dictionary_foreach, "avm2/dictionary_foreach", 1),
+    (as3_qname_constr, "avm2/qname_constr", 1),
+    (as3_qname_constr_namespace, "avm2/qname_constr_namespace", 1),
+    (as3_qname_tostring, "avm2/qname_tostring", 1),
+    (as3_qname_valueof, "avm2/qname_valueof", 1),
 }
 
 // TODO: These tests have some inaccuracies currently, so we use approx_eq to test that numeric values are close enough.

@@ -5,15 +5,12 @@ use crate::avm2::function::Executable;
 use crate::avm2::method::Method;
 use crate::avm2::names::{Namespace, QName};
 use crate::avm2::object::script_object::{ScriptObject, ScriptObjectData};
-use crate::avm2::object::{Object, ObjectPtr, TObject};
+use crate::avm2::object::{ClassObject, Object, ObjectPtr, TObject};
 use crate::avm2::scope::Scope;
 use crate::avm2::value::Value;
 use crate::avm2::Error;
-use crate::string::AvmString;
-use crate::{
-    impl_avm2_custom_object, impl_avm2_custom_object_instance, impl_avm2_custom_object_properties,
-};
 use gc_arena::{Collect, GcCell, MutationContext};
+use std::cell::{Ref, RefMut};
 
 /// An Object which can be called to execute its function code.
 #[derive(Collect, Debug, Clone, Copy)]
@@ -87,9 +84,17 @@ impl<'gc> FunctionObject<'gc> {
 }
 
 impl<'gc> TObject<'gc> for FunctionObject<'gc> {
-    impl_avm2_custom_object!(base);
-    impl_avm2_custom_object_properties!(base);
-    impl_avm2_custom_object_instance!(base);
+    fn base(&self) -> Ref<ScriptObjectData<'gc>> {
+        Ref::map(self.0.read(), |read| &read.base)
+    }
+
+    fn base_mut(&self, mc: MutationContext<'gc, '_>) -> RefMut<ScriptObjectData<'gc>> {
+        RefMut::map(self.0.write(mc), |write| &mut write.base)
+    }
+
+    fn as_ptr(&self) -> *const ObjectPtr {
+        self.0.as_ptr() as *const ObjectPtr
+    }
 
     fn to_string(&self, _mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
         Ok("function Function() {}".into())
@@ -112,7 +117,7 @@ impl<'gc> TObject<'gc> for FunctionObject<'gc> {
         receiver: Option<Object<'gc>>,
         arguments: &[Value<'gc>],
         activation: &mut Activation<'_, 'gc, '_>,
-        subclass_object: Option<Object<'gc>>,
+        subclass_object: Option<ClassObject<'gc>>,
     ) -> Result<Value<'gc>, Error> {
         if let Some(exec) = &self.0.read().exec {
             exec.exec(
@@ -136,7 +141,7 @@ impl<'gc> TObject<'gc> for FunctionObject<'gc> {
         let prototype = self
             .get_property(
                 class,
-                &QName::new(Namespace::public(), "prototype"),
+                &QName::new(Namespace::public(), "prototype").into(),
                 activation,
             )?
             .coerce_to_object(activation)?;

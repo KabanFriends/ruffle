@@ -3,20 +3,16 @@
 use crate::avm2::activation::Activation;
 use crate::avm2::names::{Namespace, QName};
 use crate::avm2::object::script_object::ScriptObjectData;
-use crate::avm2::object::{Object, ObjectPtr, TObject};
-use crate::avm2::scope::Scope;
+use crate::avm2::object::{ClassObject, Object, ObjectPtr, TObject};
 use crate::avm2::value::Value;
 use crate::avm2::Error;
 use crate::bitmap::bitmap_data::BitmapData;
-use crate::string::AvmString;
-use crate::{
-    impl_avm2_custom_object, impl_avm2_custom_object_instance, impl_avm2_custom_object_properties,
-};
 use gc_arena::{Collect, GcCell, MutationContext};
+use std::cell::{Ref, RefMut};
 
 /// A class instance allocator that allocates BitmapData objects.
 pub fn bitmapdata_allocator<'gc>(
-    class: Object<'gc>,
+    class: ClassObject<'gc>,
     proto: Object<'gc>,
     activation: &mut Activation<'_, 'gc, '_>,
 ) -> Result<Object<'gc>, Error> {
@@ -49,12 +45,12 @@ impl<'gc> BitmapDataObject<'gc> {
     pub fn from_bitmap_data(
         activation: &mut Activation<'_, 'gc, '_>,
         bitmap_data: GcCell<'gc, BitmapData<'gc>>,
-        class: Object<'gc>,
+        class: ClassObject<'gc>,
     ) -> Result<Object<'gc>, Error> {
         let proto = class
             .get_property(
-                class,
-                &QName::new(Namespace::public(), "prototype"),
+                class.into(),
+                &QName::new(Namespace::public(), "prototype").into(),
                 activation,
             )?
             .coerce_to_object(activation)?;
@@ -78,9 +74,17 @@ impl<'gc> BitmapDataObject<'gc> {
 }
 
 impl<'gc> TObject<'gc> for BitmapDataObject<'gc> {
-    impl_avm2_custom_object!(base);
-    impl_avm2_custom_object_properties!(base);
-    impl_avm2_custom_object_instance!(base);
+    fn base(&self) -> Ref<ScriptObjectData<'gc>> {
+        Ref::map(self.0.read(), |read| &read.base)
+    }
+
+    fn base_mut(&self, mc: MutationContext<'gc, '_>) -> RefMut<ScriptObjectData<'gc>> {
+        RefMut::map(self.0.write(mc), |write| &mut write.base)
+    }
+
+    fn as_ptr(&self) -> *const ObjectPtr {
+        self.0.as_ptr() as *const ObjectPtr
+    }
 
     fn derive(&self, activation: &mut Activation<'_, 'gc, '_>) -> Result<Object<'gc>, Error> {
         let base = ScriptObjectData::base_new(Some((*self).into()), None);

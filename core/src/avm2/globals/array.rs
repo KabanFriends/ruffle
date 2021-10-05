@@ -136,7 +136,8 @@ pub fn resolve_array_hole<'gc>(
                     &QName::new(
                         Namespace::public(),
                         AvmString::new(activation.context.gc_context, i.to_string()),
-                    ),
+                    )
+                    .into(),
                     activation,
                 )
             })
@@ -215,14 +216,11 @@ pub fn to_locale_string<'gc>(
     join_inner(act, this, &[",".into()], |v, activation| {
         let o = v.coerce_to_object(activation)?;
 
-        let tls = o.get_property(
-            o,
-            &QName::new(Namespace::public(), "toLocaleString"),
+        o.call_property(
+            &QName::new(Namespace::public(), "toLocaleString").into(),
+            &[],
             activation,
-        )?;
-
-        tls.coerce_to_object(activation)?
-            .call(Some(o), &[], activation, o.proto())
+        )
     })
 }
 
@@ -278,7 +276,7 @@ impl<'gc> ArrayIter<'gc> {
         let length = array_object
             .get_property(
                 array_object,
-                &QName::new(Namespace::public(), "length"),
+                &QName::new(Namespace::public(), "length").into(),
                 activation,
             )?
             .coerce_to_u32(activation)?;
@@ -310,7 +308,8 @@ impl<'gc> ArrayIter<'gc> {
                         &QName::new(
                             Namespace::public(),
                             AvmString::new(activation.context.gc_context, i.to_string()),
-                        ),
+                        )
+                        .into(),
                         activation,
                     )
                     .map(|val| (i, val)),
@@ -340,7 +339,8 @@ impl<'gc> ArrayIter<'gc> {
                         &QName::new(
                             Namespace::public(),
                             AvmString::new(activation.context.gc_context, i.to_string()),
-                        ),
+                        )
+                        .into(),
                         activation,
                     )
                     .map(|val| (i, val)),
@@ -378,7 +378,7 @@ pub fn for_each<'gc>(
                 receiver,
                 &[item, i.into(), this.into()],
                 activation,
-                receiver.and_then(|r| r.proto()),
+                receiver.and_then(|r| r.instance_of()),
             )?;
         }
     }
@@ -413,7 +413,7 @@ pub fn map<'gc>(
                 receiver,
                 &[item, i.into(), this.into()],
                 activation,
-                receiver.and_then(|r| r.proto()),
+                receiver.and_then(|r| r.instance_of()),
             )?;
 
             new_array.push(new_item);
@@ -453,7 +453,7 @@ pub fn filter<'gc>(
                     receiver,
                     &[item.clone(), i.into(), this.into()],
                     activation,
-                    receiver.and_then(|r| r.proto()),
+                    receiver.and_then(|r| r.instance_of()),
                 )?
                 .coerce_to_boolean();
 
@@ -496,7 +496,7 @@ pub fn every<'gc>(
                     receiver,
                     &[item, i.into(), this.into()],
                     activation,
-                    receiver.and_then(|r| r.proto()),
+                    receiver.and_then(|r| r.instance_of()),
                 )?
                 .coerce_to_boolean();
 
@@ -539,7 +539,7 @@ pub fn some<'gc>(
                     receiver,
                     &[item, i.into(), this.into()],
                     activation,
-                    receiver.and_then(|r| r.proto()),
+                    receiver.and_then(|r| r.instance_of()),
                 )?
                 .coerce_to_boolean();
 
@@ -1208,14 +1208,14 @@ pub fn sort_on<'gc>(
                         let a_object = a.coerce_to_object(activation)?;
                         let a_field = a_object.get_property(
                             a_object,
-                            &QName::new(Namespace::public(), *field_name),
+                            &QName::new(Namespace::public(), *field_name).into(),
                             activation,
                         )?;
 
                         let b_object = b.coerce_to_object(activation)?;
                         let b_field = b_object.get_property(
                             b_object,
-                            &QName::new(Namespace::public(), *field_name),
+                            &QName::new(Namespace::public(), *field_name).into(),
                             activation,
                         )?;
 

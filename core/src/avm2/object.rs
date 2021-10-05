@@ -28,8 +28,8 @@ mod array_object;
 mod bitmapdata_object;
 mod bytearray_object;
 mod class_object;
-mod custom_object;
 mod date_object;
+mod dictionary_object;
 mod dispatch_object;
 mod domain_object;
 mod event_object;
@@ -37,6 +37,7 @@ mod function_object;
 mod loaderinfo_object;
 mod namespace_object;
 mod primitive_object;
+mod qname_object;
 mod regexp_object;
 mod script_object;
 mod sound_object;
@@ -50,6 +51,7 @@ pub use crate::avm2::object::bitmapdata_object::{bitmapdata_allocator, BitmapDat
 pub use crate::avm2::object::bytearray_object::{bytearray_allocator, ByteArrayObject};
 pub use crate::avm2::object::class_object::ClassObject;
 pub use crate::avm2::object::date_object::{date_allocator, DateObject};
+pub use crate::avm2::object::dictionary_object::{dictionary_allocator, DictionaryObject};
 pub use crate::avm2::object::dispatch_object::DispatchObject;
 pub use crate::avm2::object::domain_object::{appdomain_allocator, DomainObject};
 pub use crate::avm2::object::event_object::{event_allocator, EventObject};
@@ -59,8 +61,9 @@ pub use crate::avm2::object::loaderinfo_object::{
 };
 pub use crate::avm2::object::namespace_object::{namespace_allocator, NamespaceObject};
 pub use crate::avm2::object::primitive_object::{primitive_allocator, PrimitiveObject};
+pub use crate::avm2::object::qname_object::{qname_allocator, QNameObject};
 pub use crate::avm2::object::regexp_object::{regexp_allocator, RegExpObject};
-pub use crate::avm2::object::script_object::ScriptObject;
+pub use crate::avm2::object::script_object::{ScriptObject, ScriptObjectData};
 pub use crate::avm2::object::sound_object::{sound_allocator, SoundObject};
 pub use crate::avm2::object::soundchannel_object::{soundchannel_allocator, SoundChannelObject};
 pub use crate::avm2::object::stage_object::{stage_allocator, StageObject};
@@ -93,122 +96,245 @@ pub use crate::avm2::object::xml_object::{xml_allocator, XmlObject};
         SoundChannelObject(SoundChannelObject<'gc>),
         BitmapDataObject(BitmapDataObject<'gc>),
         DateObject(DateObject<'gc>),
+        DictionaryObject(DictionaryObject<'gc>),
+        QNameObject(QNameObject<'gc>),
     }
 )]
 pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy {
-    /// Retrieve a property by its QName, without taking prototype lookups
-    /// into account.
+    /// Get the base of this object.
+    /// Any trait method implementations that were not overrided will forward the call to this instead.
+    fn base(&self) -> Ref<ScriptObjectData<'gc>>;
+    fn base_mut(&self, mc: MutationContext<'gc, '_>) -> RefMut<ScriptObjectData<'gc>>;
+
+    /// Retrieve a property by QName, after multiname resolution, prototype
+    /// lookups, and all other considerations have been taken.
+    ///
+    /// This required method is only intended to be called by other TObject
+    /// methods.
     fn get_property_local(
         self,
         receiver: Object<'gc>,
         name: &QName<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
-    ) -> Result<Value<'gc>, Error>;
+    ) -> Result<Value<'gc>, Error> {
+        let base = self.base();
+        let rv = base.get_property_local(receiver, name, activation)?;
 
-    /// Retrieve a property by its QName.
+        drop(base);
+
+        rv.resolve(activation)
+    }
+
+    /// Retrieve a property by Multiname lookup.
+    ///
+    /// This corresponds directly to the AVM2 operation `getproperty`, with the
+    /// exception that it does not special-case object lookups on dictionary
+    /// structured objects.
     fn get_property(
         self,
         receiver: Object<'gc>,
-        name: &QName<'gc>,
+        multiname: &Multiname<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
     ) -> Result<Value<'gc>, Error> {
-        let has_no_getter = self.has_own_virtual_setter(name) && !self.has_own_virtual_getter(name);
+        let name = self.resolve_multiname(multiname)?;
 
-        if self.has_own_property(name)? && !has_no_getter {
-            return self.get_property_local(receiver, name, activation);
+        // Special case: Unresolvable properties on dynamic classes are treated
+        // as dynamic properties that have not yet been set, and yield
+        // `undefined`
+        if name.is_none() {
+            if !self
+                .instance_of_class_definition()
+                .map(|c| c.read().is_sealed())
+                .unwrap_or(false)
+            {
+                return Ok(Value::Undefined);
+            }
+
+            return Err(
+                format!("Cannot get undefined property {:?}", multiname.local_name()).into(),
+            );
+        }
+
+        // At this point, the name must be a valid QName.
+        let name = name.unwrap();
+        let has_no_getter =
+            self.has_own_virtual_setter(&name) && !self.has_own_virtual_getter(&name);
+
+        if self.has_own_property(&name)? && !has_no_getter {
+            return self.get_property_local(receiver, &name, activation);
         }
 
         if let Some(proto) = self.proto() {
-            return proto.get_property(receiver, name, activation);
+            return proto.get_property(receiver, multiname, activation);
         }
 
         Ok(Value::Undefined)
     }
 
-    /// Retrieve the class object that a particular QName trait is defined in.
+    /// Set a property by QName, after multiname resolution and all other
+    /// considerations have been taken.
     ///
-    /// Must be called on a class object; will error out if called on
-    /// anything else.
-    ///
-    /// This function returns `None` for non-trait properties, such as actually
-    /// defined prototype methods for ES3-style classes.
-    fn find_class_for_trait(self, name: &QName<'gc>) -> Result<Option<Object<'gc>>, Error> {
-        let class = self
-            .as_class_definition()
-            .ok_or("Cannot get base traits on non-class object")?;
-
-        if class.read().has_instance_trait(name) {
-            return Ok(Some(self.into()));
-        }
-
-        if let Some(base) = self
-            .as_class_object()
-            .and_then(|cls| cls.superclass_object())
-        {
-            return base.find_class_for_trait(name);
-        }
-
-        Ok(None)
-    }
-
-    /// Set a property on this specific object.
+    /// This required method is only intended to be called by other TObject
+    /// methods.
     fn set_property_local(
         self,
         receiver: Object<'gc>,
         name: &QName<'gc>,
         value: Value<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
-    ) -> Result<(), Error>;
+    ) -> Result<(), Error> {
+        let mut base = self.base_mut(activation.context.gc_context);
 
-    /// Set a property by its QName.
+        let rv = base.set_property_local(receiver, name, value, activation)?;
+
+        drop(base);
+
+        rv.resolve(activation)?;
+
+        Ok(())
+    }
+
+    /// Set a property by Multiname lookup.
+    ///
+    /// This corresponds directly with the AVM2 operation `setproperty`, with
+    /// the exception that it does not special-case object lookups on
+    /// dictionary structured objects.
     fn set_property(
         &mut self,
         receiver: Object<'gc>,
-        name: &QName<'gc>,
+        multiname: &Multiname<'gc>,
         value: Value<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
     ) -> Result<(), Error> {
-        self.set_property_local(receiver, name, value, activation)
+        let name = self.resolve_multiname(multiname)?;
+
+        // Special case: Unresolvable properties on dynamic classes are treated
+        // as initializing a new dynamic property on namespace Public("").
+        if name.is_none() {
+            if !self
+                .instance_of_class_definition()
+                .map(|c| c.read().is_sealed())
+                .unwrap_or(false)
+            {
+                let local_name: Result<AvmString<'gc>, Error> = multiname
+                    .local_name()
+                    .ok_or_else(|| "Cannot set undefined property using any name".into());
+                let name = QName::dynamic_name(local_name?);
+                return self.set_property_local(receiver, &name, value, activation);
+            }
+
+            return Err(
+                format!("Cannot set undefined property {:?}", multiname.local_name()).into(),
+            );
+        }
+
+        self.set_property_local(receiver, &name.unwrap(), value, activation)
     }
 
-    /// Init a property on this specific object.
+    /// Initialize a property by QName, after multiname resolution and all
+    /// other considerations have been taken.
+    ///
+    /// This required method is only intended to be called by other TObject
+    /// methods.
     fn init_property_local(
         self,
         receiver: Object<'gc>,
         name: &QName<'gc>,
         value: Value<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
-    ) -> Result<(), Error>;
+    ) -> Result<(), Error> {
+        let mut base = self.base_mut(activation.context.gc_context);
+        let rv = base.init_property_local(receiver, name, value, activation)?;
 
-    /// Init a property by its QName.
+        drop(base);
+
+        rv.resolve(activation)?;
+
+        Ok(())
+    }
+
+    /// Initialize a property by Multiname lookup.
+    ///
+    /// This corresponds directly with the AVM2 operation `initproperty`.
     fn init_property(
         &mut self,
         receiver: Object<'gc>,
-        name: &QName<'gc>,
+        multiname: &Multiname<'gc>,
         value: Value<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
     ) -> Result<(), Error> {
-        if self.has_own_virtual_setter(name) {
-            return self.init_property_local(receiver, name, value, activation);
-        }
+        let name = self.resolve_multiname(multiname)?;
 
-        let mut proto = self.proto();
-        while let Some(mut my_proto) = proto {
-            //NOTE: This only works because we validate ahead-of-time that
-            //we're calling a virtual setter. If you call `set_property` on
-            //a non-virtual you will actually alter the prototype.
-            if my_proto.has_own_virtual_setter(name) {
-                return my_proto.init_property(receiver, name, value, activation);
+        // Special case: Unresolvable properties on dynamic classes are treated
+        // as initializing a new dynamic property on namespace Public("").
+        if name.is_none() {
+            if !self
+                .instance_of_class_definition()
+                .map(|c| c.read().is_sealed())
+                .unwrap_or(false)
+            {
+                let local_name: Result<AvmString<'gc>, Error> = multiname
+                    .local_name()
+                    .ok_or_else(|| "Cannot set undefined property using any name".into());
+                let name = QName::dynamic_name(local_name?);
+                return self.init_property_local(receiver, &name, value, activation);
             }
 
-            proto = my_proto.proto();
+            return Err(
+                format!("Cannot set undefined property {:?}", multiname.local_name()).into(),
+            );
         }
 
-        receiver.init_property_local(receiver, name, value, activation)
+        self.init_property_local(receiver, &name.unwrap(), value, activation)
+    }
+
+    /// Call a named property on the object.
+    ///
+    /// This corresponds directly to the `callproperty` operation in AVM2.
+    fn call_property(
+        self,
+        multiname: &Multiname<'gc>,
+        arguments: &[Value<'gc>],
+        activation: &mut Activation<'_, 'gc, '_>,
+    ) -> Result<Value<'gc>, Error> {
+        let name = self.resolve_multiname(multiname)?;
+        if name.is_none() {
+            return Err(format!(
+                "Attempted to call undefined property {:?}",
+                multiname.local_name()
+            )
+            .into());
+        }
+
+        let name = name.unwrap();
+        let superclass_object = if let Some(c) = self.instance_of() {
+            c.find_class_for_trait(&name)?
+        } else {
+            None
+        };
+
+        let function = self
+            .get_property(self.into(), multiname, activation)?
+            .coerce_to_object(activation);
+        if function.is_err() {
+            return Err(format!(
+                "Attempted to call undefined property {:?}",
+                multiname.local_name()
+            )
+            .into());
+        }
+
+        function
+            .unwrap()
+            .call(Some(self.into()), arguments, activation, superclass_object)
     }
 
     /// Retrieve a slot by its index.
-    fn get_slot(self, id: u32) -> Result<Value<'gc>, Error>;
+    fn get_slot(self, id: u32) -> Result<Value<'gc>, Error> {
+        let base = self.base();
+
+        base.get_slot(id)
+    }
 
     /// Set a slot by its index.
     fn set_slot(
@@ -216,7 +342,11 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         id: u32,
         value: Value<'gc>,
         mc: MutationContext<'gc, '_>,
-    ) -> Result<(), Error>;
+    ) -> Result<(), Error> {
+        let mut base = self.base_mut(mc);
+
+        base.set_slot(id, value, mc)
+    }
 
     /// Initialize a slot by its index.
     fn init_slot(
@@ -224,10 +354,18 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         id: u32,
         value: Value<'gc>,
         mc: MutationContext<'gc, '_>,
-    ) -> Result<(), Error>;
+    ) -> Result<(), Error> {
+        let mut base = self.base_mut(mc);
+
+        base.init_slot(id, value, mc)
+    }
 
     /// Retrieve a method by its index.
-    fn get_method(self, id: u32) -> Option<Object<'gc>>;
+    fn get_method(self, id: u32) -> Option<Object<'gc>> {
+        let base = self.base();
+
+        base.get_method(id)
+    }
 
     /// Retrieves the scope chain of the object at time of its creation.
     ///
@@ -235,7 +373,11 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     /// object is called, as well as any class methods on the object.
     /// Non-method functions and prototype functions (ES3 methods) do not use
     /// this scope chain.
-    fn get_scope(self) -> Option<GcCell<'gc, Scope<'gc>>>;
+    fn get_scope(self) -> Option<GcCell<'gc, Scope<'gc>>> {
+        let base = self.base();
+
+        base.get_scope()
+    }
 
     /// Resolve a multiname into a single QName, if any of the namespaces
     /// match.
@@ -273,15 +415,25 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     /// Trait names will be resolve on class objects and object instances, but
     /// not prototypes. If you want to search a prototype's provided traits you
     /// must walk the prototype chain using `resolve_any_trait`.
-    fn resolve_any(self, local_name: AvmString<'gc>) -> Result<Option<Namespace<'gc>>, Error>;
+    fn resolve_any(self, local_name: AvmString<'gc>) -> Result<Option<Namespace<'gc>>, Error> {
+        let base = self.base();
+
+        base.resolve_any(local_name)
+    }
 
     /// Given a local name of a trait, find the namespace it resides in, if any.
     ///
     /// This function only works for names which are trait properties, not
     /// dynamic or prototype properties. Furthermore, instance prototypes *will*
     /// resolve trait names here, contrary to their behavior in `resolve_any.`
-    fn resolve_any_trait(self, local_name: AvmString<'gc>)
-        -> Result<Option<Namespace<'gc>>, Error>;
+    fn resolve_any_trait(
+        self,
+        local_name: AvmString<'gc>,
+    ) -> Result<Option<Namespace<'gc>>, Error> {
+        let base = self.base();
+
+        base.resolve_any_trait(local_name)
+    }
 
     /// Indicates whether or not a property exists on an object.
     fn has_property(self, name: &QName<'gc>) -> Result<bool, Error> {
@@ -296,47 +448,83 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
 
     /// Indicates whether or not a property or trait exists on an object and is
     /// not part of the prototype chain.
-    fn has_own_property(self, name: &QName<'gc>) -> Result<bool, Error>;
+    fn has_own_property(self, name: &QName<'gc>) -> Result<bool, Error> {
+        let base = self.base();
+
+        base.has_own_property(name)
+    }
 
     /// Returns true if an object has one or more traits of a given name.
-    fn has_trait(self, name: &QName<'gc>) -> Result<bool, Error>;
+    fn has_trait(self, name: &QName<'gc>) -> Result<bool, Error> {
+        let base = self.base();
+
+        base.has_trait(name)
+    }
 
     /// Check if a particular object contains a virtual getter by the given
     /// name.
-    fn has_own_virtual_getter(self, name: &QName<'gc>) -> bool;
+    fn has_own_virtual_getter(self, name: &QName<'gc>) -> bool {
+        let base = self.base();
+
+        base.has_own_virtual_getter(name)
+    }
 
     /// Check if a particular object contains a virtual setter by the given
     /// name.
-    fn has_own_virtual_setter(self, name: &QName<'gc>) -> bool;
+    fn has_own_virtual_setter(self, name: &QName<'gc>) -> bool {
+        let base = self.base();
+
+        base.has_own_virtual_setter(name)
+    }
 
     /// Indicates whether or not a property is overwritable.
     fn is_property_overwritable(
         self,
-        gc_context: MutationContext<'gc, '_>,
-        _name: &QName<'gc>,
-    ) -> bool;
+        _gc_context: MutationContext<'gc, '_>,
+        name: &QName<'gc>,
+    ) -> bool {
+        let base = self.base();
+
+        base.is_property_overwritable(name)
+    }
 
     /// Indicates whether or not a property is final.
-    fn is_property_final(self, _name: &QName<'gc>) -> bool;
+    fn is_property_final(self, name: &QName<'gc>) -> bool {
+        let base = self.base();
+
+        base.is_property_final(name)
+    }
 
     /// Delete a named property from the object.
     ///
     /// Returns false if the property cannot be deleted.
-    fn delete_property(&self, gc_context: MutationContext<'gc, '_>, name: &QName<'gc>) -> bool;
+    fn delete_property(&self, gc_context: MutationContext<'gc, '_>, name: &QName<'gc>) -> bool {
+        let mut base = self.base_mut(gc_context);
+
+        base.delete_property(name)
+    }
 
     /// Retrieve the `__proto__` of a given object.
     ///
     /// The proto is another object used to resolve methods across a class of
     /// multiple objects. It should also be accessible as `__proto__` from
     /// `get`.
-    fn proto(&self) -> Option<Object<'gc>>;
+    fn proto(&self) -> Option<Object<'gc>> {
+        let base = self.base();
+
+        base.proto()
+    }
 
     /// Change the `__proto__` on this object.
     ///
     /// This method primarily exists so that the global scope that player
     /// globals loads into can be created before its superclasses are. It
     /// should be used sparingly, if at all.
-    fn set_proto(self, mc: MutationContext<'gc, '_>, proto: Object<'gc>);
+    fn set_proto(self, mc: MutationContext<'gc, '_>, proto: Object<'gc>) {
+        let mut base = self.base_mut(mc);
+
+        base.set_proto(proto)
+    }
 
     /// Retrieve a given enumerable name by index.
     ///
@@ -347,12 +535,20 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     /// Objects are responsible for maintaining a consistently ordered and
     /// indexed list of enumerable names which can be queried by this
     /// mechanism.
-    fn get_enumerant_name(&self, index: u32) -> Option<QName<'gc>>;
+    fn get_enumerant_name(&self, index: u32) -> Option<Value<'gc>> {
+        let base = self.base();
+
+        base.get_enumerant_name(index)
+    }
 
     /// Determine if a property is currently enumerable.
     ///
     /// Properties that do not exist are also not enumerable.
-    fn property_is_enumerable(&self, name: &QName<'gc>) -> bool;
+    fn property_is_enumerable(&self, name: &QName<'gc>) -> bool {
+        let base = self.base();
+
+        base.property_is_enumerable(name)
+    }
 
     /// Mark a dynamic property on this object as enumerable.
     fn set_local_property_is_enumerable(
@@ -360,7 +556,11 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         mc: MutationContext<'gc, '_>,
         name: &QName<'gc>,
         is_enumerable: bool,
-    ) -> Result<(), Error>;
+    ) -> Result<(), Error> {
+        let mut base = self.base_mut(mc);
+
+        base.set_local_property_is_enumerable(name, is_enumerable)
+    }
 
     /// Install a method (or any other non-slot value) on an object.
     fn install_method(
@@ -370,7 +570,11 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         disp_id: u32,
         function: Object<'gc>,
         is_final: bool,
-    );
+    ) {
+        let mut base = self.base_mut(mc);
+
+        base.install_method(name, disp_id, function, is_final)
+    }
 
     /// Install a getter method on an object property.
     fn install_getter(
@@ -380,7 +584,11 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         disp_id: u32,
         function: Object<'gc>,
         is_final: bool,
-    ) -> Result<(), Error>;
+    ) -> Result<(), Error> {
+        let mut base = self.base_mut(mc);
+
+        base.install_getter(name, disp_id, function, is_final)
+    }
 
     /// Install a setter method on an object property.
     fn install_setter(
@@ -390,7 +598,11 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         disp_id: u32,
         function: Object<'gc>,
         is_final: bool,
-    ) -> Result<(), Error>;
+    ) -> Result<(), Error> {
+        let mut base = self.base_mut(mc);
+
+        base.install_setter(name, disp_id, function, is_final)
+    }
 
     /// Install a dynamic or built-in value property on an object.
     fn install_dynamic_property(
@@ -398,7 +610,11 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         mc: MutationContext<'gc, '_>,
         name: QName<'gc>,
         value: Value<'gc>,
-    ) -> Result<(), Error>;
+    ) -> Result<(), Error> {
+        let mut base = self.base_mut(mc);
+
+        base.install_dynamic_property(name, value)
+    }
 
     /// Install a slot on an object property.
     fn install_slot(
@@ -408,7 +624,11 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         id: u32,
         value: Value<'gc>,
         is_final: bool,
-    );
+    ) {
+        let mut base = self.base_mut(mc);
+
+        base.install_slot(name, id, value, is_final)
+    }
 
     /// Install a const on an object property.
     fn install_const(
@@ -418,7 +638,11 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         id: u32,
         value: Value<'gc>,
         is_final: bool,
-    );
+    ) {
+        let mut base = self.base_mut(mc);
+
+        base.install_const(name, id, value, is_final)
+    }
 
     /// Install all instance traits provided by a class.
     ///
@@ -431,17 +655,14 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     fn install_instance_traits(
         &mut self,
         activation: &mut Activation<'_, 'gc, '_>,
-        from_class_object: Object<'gc>,
+        from_class_object: ClassObject<'gc>,
     ) -> Result<(), Error> {
-        if let Some(from_class_object) = from_class_object.as_class_object() {
-            if let Some(superclass_object) = from_class_object.superclass_object() {
-                self.install_instance_traits(activation, superclass_object)?;
-            }
+        if let Some(superclass_object) = from_class_object.superclass_object() {
+            self.install_instance_traits(activation, superclass_object)?;
         }
 
-        if let Some(class) = from_class_object.as_class_definition() {
-            self.install_traits(activation, class.read().instance_traits())?;
-        }
+        let class = from_class_object.inner_class_definition();
+        self.install_traits(activation, class.read().instance_traits())?;
 
         Ok(())
     }
@@ -637,223 +858,9 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         _reciever: Option<Object<'gc>>,
         _arguments: &[Value<'gc>],
         _activation: &mut Activation<'_, 'gc, '_>,
-        _subclass_object: Option<Object<'gc>>,
+        _subclass_object: Option<ClassObject<'gc>>,
     ) -> Result<Value<'gc>, Error> {
         Err("Object is not callable".into())
-    }
-
-    /// Call the instance initializer.
-    fn call_init(
-        self,
-        _reciever: Option<Object<'gc>>,
-        _arguments: &[Value<'gc>],
-        _activation: &mut Activation<'_, 'gc, '_>,
-        _subclass_object: Option<Object<'gc>>,
-    ) -> Result<Value<'gc>, Error> {
-        Err("Object is not a Class".into())
-    }
-
-    /// Call the instance's native initializer.
-    ///
-    /// The native initializer is called when native code needs to construct an
-    /// object, or when supercalling into a parent constructor (as there are
-    /// classes that cannot be constructed but can be supercalled).
-    fn call_native_init(
-        self,
-        _reciever: Option<Object<'gc>>,
-        _arguments: &[Value<'gc>],
-        _activation: &mut Activation<'_, 'gc, '_>,
-        _subclass_object: Option<Object<'gc>>,
-    ) -> Result<Value<'gc>, Error> {
-        Err("Object is not a Class".into())
-    }
-
-    /// Supercall a method defined in this class.
-    ///
-    /// This is intended to be called on the class object that is the
-    /// superclass of the one that defined the currently called property. If no
-    /// such superclass exists, you should use the class object for the
-    /// reciever's actual type (i.e. the lowest in the chain). This ensures
-    /// that repeated supercalls to the same method will call parent and
-    /// grandparent methods, and so on.
-    ///
-    /// If no method exists with the given name, this falls back to calling a
-    /// property of the `reciever`. This fallback only triggers if the property
-    /// is associated with a trait. Dynamic properties will still error out.
-    ///
-    /// This function will search through the class object tree starting from
-    /// this class up to `Object` for a method trait with the given name. If it
-    /// is found, it will be called with the reciever and arguments you
-    /// provided, as if it were defined on the target instance object.
-    ///
-    /// The class that defined the method being called will also be provided to
-    /// the `Activation` that the method runs on so that further supercalls
-    /// will work as expected.
-    fn supercall_method(
-        self,
-        name: &QName<'gc>,
-        reciever: Option<Object<'gc>>,
-        arguments: &[Value<'gc>],
-        activation: &mut Activation<'_, 'gc, '_>,
-    ) -> Result<Value<'gc>, Error> {
-        let superclass_object = self.find_class_for_trait(name)?.ok_or_else(|| {
-            format!(
-                "Attempted to supercall method {:?}, which does not exist",
-                name
-            )
-        })?;
-        let mut class_traits = Vec::new();
-        superclass_object
-            .as_class_definition()
-            .unwrap()
-            .read()
-            .lookup_instance_traits(name, &mut class_traits)?;
-        let base_trait = class_traits
-            .iter()
-            .find(|t| matches!(t.kind(), TraitKind::Method { .. }));
-        let scope = superclass_object.get_scope();
-
-        if let Some(TraitKind::Method { method, .. }) = base_trait.map(|b| b.kind()) {
-            let callee = FunctionObject::from_method(activation, method.clone(), scope, reciever);
-
-            callee.call(reciever, arguments, activation, Some(superclass_object))
-        } else {
-            if let Some(reciever) = reciever {
-                if let Ok(callee) = reciever
-                    .get_property(reciever, name, activation)
-                    .and_then(|v| v.coerce_to_object(activation))
-                {
-                    return callee.call(Some(reciever), arguments, activation, None);
-                }
-            }
-
-            Err(format!(
-                "Attempted to supercall method {:?}, which does not exist",
-                name
-            )
-            .into())
-        }
-    }
-
-    /// Supercall a getter defined in this class.
-    ///
-    /// This is intended to be called on the class object that is the
-    /// superclass of the one that defined the currently called property. If no
-    /// such superclass exists, you should use the class object for the
-    /// reciever's actual type (i.e. the lowest in the chain). This ensures
-    /// that repeated supercalls to the same getter will call parent and
-    /// grandparent getters, and so on.
-    ///
-    /// If no getter exists with the given name, this falls back to getting a
-    /// property of the `reciever`. This fallback only triggers if the property
-    /// is associated with a trait. Dynamic properties will still error out.
-    ///
-    /// This function will search through the class object tree starting from
-    /// this class up to `Object` for a getter trait with the given name. If it
-    /// is found, it will be called with the reciever you provided, as if it
-    /// were defined on the target instance object.
-    ///
-    /// The class that defined the getter being called will also be provided to
-    /// the `Activation` that the getter runs on so that further supercalls
-    /// will work as expected.
-    fn supercall_getter(
-        self,
-        name: &QName<'gc>,
-        reciever: Option<Object<'gc>>,
-        activation: &mut Activation<'_, 'gc, '_>,
-    ) -> Result<Value<'gc>, Error> {
-        let superclass_object = self.find_class_for_trait(name)?.ok_or_else(|| {
-            format!(
-                "Attempted to supercall getter {:?}, which does not exist",
-                name
-            )
-        })?;
-        let mut class_traits = Vec::new();
-        superclass_object
-            .as_class_definition()
-            .unwrap()
-            .read()
-            .lookup_instance_traits(name, &mut class_traits)?;
-        let base_trait = class_traits
-            .iter()
-            .find(|t| matches!(t.kind(), TraitKind::Getter { .. }));
-        let scope = superclass_object.get_scope();
-
-        if let Some(TraitKind::Getter { method, .. }) = base_trait.map(|b| b.kind()) {
-            let callee = FunctionObject::from_method(activation, method.clone(), scope, reciever);
-
-            callee.call(reciever, &[], activation, Some(superclass_object))
-        } else if let Some(reciever) = reciever {
-            reciever.get_property(reciever, name, activation)
-        } else {
-            Err(format!(
-                "Attempted to supercall getter {:?}, which does not exist",
-                name
-            )
-            .into())
-        }
-    }
-
-    /// Supercall a setter defined in this class.
-    ///
-    /// This is intended to be called on the class object that is the
-    /// superclass of the one that defined the currently called property. If no
-    /// such superclass exists, you should use the class object for the
-    /// reciever's actual type (i.e. the lowest in the chain). This ensures
-    /// that repeated supercalls to the same setter will call parent and
-    /// grandparent setter, and so on.
-    ///
-    /// If no setter exists with the given name, this falls back to setting a
-    /// property of the `reciever`. This fallback only triggers if the property
-    /// is associated with a trait. Dynamic properties will still error out.
-    ///
-    /// This function will search through the class object tree starting from
-    /// this class up to `Object` for a setter trait with the given name. If it
-    /// is found, it will be called with the reciever and value you provided,
-    /// as if it were defined on the target instance object.
-    ///
-    /// The class that defined the setter being called will also be provided to
-    /// the `Activation` that the setter runs on so that further supercalls
-    /// will work as expected.
-    fn supercall_setter(
-        self,
-        name: &QName<'gc>,
-        value: Value<'gc>,
-        reciever: Option<Object<'gc>>,
-        activation: &mut Activation<'_, 'gc, '_>,
-    ) -> Result<(), Error> {
-        let superclass_object = self.find_class_for_trait(name)?.ok_or_else(|| {
-            format!(
-                "Attempted to supercall setter {:?}, which does not exist",
-                name
-            )
-        })?;
-        let mut class_traits = Vec::new();
-        superclass_object
-            .as_class_definition()
-            .unwrap()
-            .read()
-            .lookup_instance_traits(name, &mut class_traits)?;
-        let base_trait = class_traits
-            .iter()
-            .find(|t| matches!(t.kind(), TraitKind::Setter { .. }));
-        let scope = superclass_object.get_scope();
-
-        if let Some(TraitKind::Setter { method, .. }) = base_trait.map(|b| b.kind()) {
-            let callee = FunctionObject::from_method(activation, method.clone(), scope, reciever);
-
-            callee.call(reciever, &[value], activation, Some(superclass_object))?;
-
-            Ok(())
-        } else if let Some(mut reciever) = reciever {
-            reciever.set_property(reciever, name, value, activation)
-        } else {
-            Err(format!(
-                "Attempted to supercall setter {:?}, which does not exist",
-                name
-            )
-            .into())
-        }
     }
 
     /// Construct a Class or Function and return an instance of it.
@@ -878,6 +885,22 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         _args: &[Value<'gc>],
     ) -> Result<Object<'gc>, Error> {
         Err("Object is not constructable".into())
+    }
+
+    /// Construct a property of this object by Multiname lookup.
+    ///
+    /// This corresponds directly to the AVM2 operation `constructprop`.
+    fn construct_prop(
+        self,
+        multiname: &Multiname<'gc>,
+        args: &[Value<'gc>],
+        activation: &mut Activation<'_, 'gc, '_>,
+    ) -> Result<Object<'gc>, Error> {
+        let ctor = self
+            .get_property(self.into(), multiname, activation)?
+            .coerce_to_object(activation)?;
+
+        ctor.construct(activation, args)
     }
 
     /// Construct a host object prototype of some kind and return it.
@@ -905,7 +928,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         &self,
         _activation: &mut Activation<'_, 'gc, '_>,
         _params: &[Value<'gc>],
-    ) -> Result<Object<'gc>, Error> {
+    ) -> Result<ClassObject<'gc>, Error> {
         Err("Not a parameterized type".into())
     }
 
@@ -975,7 +998,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         class: Object<'gc>,
     ) -> Result<bool, Error> {
         let type_proto = class
-            .get_property(class, &QName::dynamic_name("prototype"), activation)?
+            .get_property(class, &QName::dynamic_name("prototype").into(), activation)?
             .coerce_to_object(activation)?;
 
         self.has_prototype_in_chain(type_proto)
@@ -1010,7 +1033,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     /// checking against this object.
     fn is_of_type(
         &self,
-        test_class: Object<'gc>,
+        test_class: ClassObject<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
     ) -> Result<bool, Error> {
         let my_class = self.instance_of();
@@ -1026,85 +1049,24 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         }
     }
 
-    /// Determine if this class has a given type in its superclass chain.
-    ///
-    /// The given object `test_class` should be either a superclass or
-    /// interface we are checking against this class.
-    ///
-    /// To test if a class *instance* is of a given type, see is_of_type.
-    fn has_class_in_chain(
-        &self,
-        test_class: Object<'gc>,
-        activation: &mut Activation<'_, 'gc, '_>,
-    ) -> Result<bool, Error> {
-        let my_class: Object<'gc> = (*self).into();
-        let mut my_class = Some(my_class);
-
-        while let Some(class) = my_class {
-            if Object::ptr_eq(class, test_class) {
-                return Ok(true);
-            }
-
-            if let Some(class) = class.as_class_object() {
-                for interface in class.interfaces() {
-                    if Object::ptr_eq(interface, test_class) {
-                        return Ok(true);
-                    }
-                }
-            }
-
-            if let (Some(class), Some(test_class)) =
-                (class.as_class_object(), test_class.as_class_object())
-            {
-                if let (Some(my_param), Some(test_param)) =
-                    (class.as_class_params(), test_class.as_class_params())
-                {
-                    let mut are_all_params_coercible = true;
-
-                    are_all_params_coercible &= match (my_param, test_param) {
-                        (Some(my_param), Some(test_param)) => {
-                            my_param.has_class_in_chain(test_param, activation)?
-                        }
-                        (None, Some(_)) => false,
-                        _ => true,
-                    };
-
-                    if are_all_params_coercible {
-                        return Ok(true);
-                    }
-                }
-            }
-
-            if let Some(class) = class.as_class_object() {
-                my_class = class.superclass_object()
-            } else {
-                my_class = None;
-            }
-        }
-
-        Ok(false)
-    }
-
     /// Get a raw pointer value for this object.
     fn as_ptr(&self) -> *const ObjectPtr;
 
     /// Get this object's class, if it has one.
-    fn instance_of(&self) -> Option<Object<'gc>>;
+    fn instance_of(&self) -> Option<ClassObject<'gc>> {
+        let base = self.base();
+
+        base.instance_of()
+    }
 
     /// Get this object's class's `Class`, if it has one.
     fn instance_of_class_definition(&self) -> Option<GcCell<'gc, Class<'gc>>> {
-        self.instance_of().and_then(|cls| cls.as_class_definition())
+        self.instance_of().map(|cls| cls.inner_class_definition())
     }
 
     /// Try to corece this object into a `ClassObject`.
     fn as_class_object(&self) -> Option<ClassObject<'gc>> {
         None
-    }
-
-    /// Get this object's `Class`, if it's a `ClassObject`.
-    fn as_class_definition(&self) -> Option<GcCell<'gc, Class<'gc>>> {
-        self.as_class_object()
-            .map(|cls| cls.inner_class_definition())
     }
 
     /// Get this object's `Executable`, if it has one.
@@ -1114,6 +1076,11 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
 
     /// Unwrap this object's `Namespace`, if the object is a boxed namespace.
     fn as_namespace(&self) -> Option<Ref<Namespace<'gc>>> {
+        None
+    }
+
+    /// Unwrap this object as a `QNameObject`
+    fn as_qname_object(self) -> Option<QNameObject<'gc>> {
         None
     }
 
@@ -1263,12 +1230,17 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     fn as_date_object(&self) -> Option<DateObject<'gc>> {
         None
     }
+
+    /// Get this object as a `DictionaryObject`, if it is one.
+    fn as_dictionary_object(self) -> Option<DictionaryObject<'gc>> {
+        None
+    }
 }
 
 pub enum ObjectPtr {}
 
 impl<'gc> Object<'gc> {
-    pub fn ptr_eq(a: Object<'gc>, b: Object<'gc>) -> bool {
+    pub fn ptr_eq<T: TObject<'gc>>(a: T, b: T) -> bool {
         a.as_ptr() == b.as_ptr()
     }
 }
