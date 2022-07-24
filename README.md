@@ -1,3 +1,40 @@
+# Ruffle 日本語対応デモ
+
+## これはなに
+[Ruffle](https://github.com/ruffle-rs/ruffle) の日本語関連の不具合を直してみたものです。  
+noto-sans-definefont3.binが重い場合には、以下のフォントに差し替えて利用できます。
+ - noto_sans_cjk_jis1.bin
+   - JIS第一水準のみのサブセット
+ - noto_sans_cjk_jis1_plus.bin
+   - JIS第一水準+常用、人名漢字のサブセット
+ - noto_sans_cjk_jis2.bin
+   - JIS第二水準のみのサブセット
+ - noto_sans_cjk_jis2_plus.bin
+   - JIS第二水準+常用、人名漢字のサブセット
+
+noto-sans-definefont3.binの作成には、とりぽっぽ🚂💨さん(twitter: @toripoppo0307)に多大なるご協力をいただきました。
+ 
+## FAQ
+ - Q.本家にPR投げないの
+   - A.このリポジトリには本家の開発方針的に取り入れられない暫定的な対応も含まれています。  
+       また、私の時間と英語力と技術力がなさすぎて年内に投げられそうにないので、  
+       とりあえず公開してRuffleでの非英語コンテンツへの対応が現実的なことを示して  
+       日本国内にもFlashコンテンツの存続にRuffleという選択肢があることを広めることが先決と考えて公開しました。  
+
+ - Q.本家からの変更内容は？
+   - A.  
+     - ~~本家のIssue#1183の修正（マルチバイト文字が含まれる場合にパニックが発生していた）~~ →本家で修正されたのでそちらをマージして削除  
+     - ~~マルチバイト文字の改行に対応（改行位置が適切ではないことがある）~~ →本家で修正されたのでそちらをマージして削除  
+     - 同梱のデバイスフォントをNoto-Sans-CJK-JPに差し替え(#1099で本家の開発者様が触れられている暫定対応)  
+     - ~~SWFムービーから別のSWFムービーを呼び出した際にデバイスフォントが正常に読み込まれない問題の修正~~→本家で修正されたのでそちらをマージして削除  
+     - ~~AVM1において指定されていない引数の扱いが不正(日本語とは関係なし)~~ →本家で対応いただいたのでそちらをマージして削除  
+     - useCodepageの実装(WIP)
+     - WINDOWS_1252文字コードをSHIFT_JISに変更
+
+Commit Logの整理のため、以前のブランチを feature/japanese_support_old に移動しました。
+
+以下、本家のREADMEです。
+
 <p align="center">
   <a href="https://ruffle.rs"><img alt="Ruffle" src="https://ruffle.rs/assets/logo.svg" /></a>
 </p>
