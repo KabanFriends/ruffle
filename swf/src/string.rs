@@ -127,6 +127,7 @@ impl SwfStr {
     /// For SWF version 6 and higher, this is always UTF-8.
     /// For SWF version 5 and lower, this is locale-dependent,
     /// and we default to WINDOWS-1252.
+    /// ※当日本語フォークでは日本語環境にあわせてデフォルトをSHIFT_JISとしている
     ///
     /// # Examples
     ///
@@ -142,7 +143,7 @@ impl SwfStr {
         if swf_version >= 6 {
             UTF_8
         } else {
-            WINDOWS_1252
+            SHIFT_JIS
         }
     }
 
