@@ -39,6 +39,7 @@ use std::time::Duration;
 use swf::read::{extract_swz, read_compression_type};
 use thiserror::Error;
 use url::{form_urlencoded, ParseError, Url};
+use swf::SwfStr;
 
 pub type Handle = Index;
 
@@ -1022,7 +1023,14 @@ impl<'gc> Loader<'gc> {
                     ActivationIdentifier::root("[Form Loader]"),
                 );
 
-                for (k, v) in form_urlencoded::parse(&response.body) {
+                let datastr =
+                if activation.context.system.use_codepage {
+                    SwfStr::encoding_for_version(1).decode(&response.body).0
+                } else {
+                    SwfStr::encoding_for_version(activation.swf_version()).decode(&response.body).0
+                };
+
+                for (k, v) in form_urlencoded::parse(&datastr.as_bytes()) {
                     let k = AvmString::new_utf8(activation.context.gc_context, k);
                     let v = AvmString::new_utf8(activation.context.gc_context, v);
                     that.set(k, v.into(), &mut activation)?;
@@ -1107,7 +1115,11 @@ impl<'gc> Loader<'gc> {
                         } else {
                             AvmString::new_utf8(
                                 activation.context.gc_context,
-                                UTF_8.decode(&response.body).0,
+                                if activation.context.system.use_codepage {
+                                    SwfStr::encoding_for_version(1).decode(&response.body).0
+                                } else {
+                                    SwfStr::encoding_for_version(activation.swf_version()).decode(&response.body).0
+                                },
                             )
                             .into()
                         };

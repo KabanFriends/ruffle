@@ -2497,6 +2497,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
                         Request::get(format!("{url}?{qstring}"))
                     }
                     NavigationMethod::Get => Request::get(format!("{url}&{qstring}")),
+                    // TODO: エンコードの必要があるかを調べる
                     NavigationMethod::Post => Request::post(
                         url.to_utf8_lossy().into_owned(),
                         Some((
