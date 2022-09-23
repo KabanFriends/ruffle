@@ -375,7 +375,10 @@ impl<'gc> Font<'gc> {
 
                 char_iter.next(); // No need to check cur_slice[0..0]
                 while last_passing_breakpoint.0 < remaining_width {
-                    prev_char_index = word_start + prev_frag_end;
+                    // 日本語での改行位置の調整のためマイナス1をしている。
+                    // TODO: 手元で軽く確認した範囲では英語でも挙動に問題はでなかったが、
+                    //       もう少し厳密に確認しておく必要がある。
+                    prev_char_index = word_start + prev_frag_end - 1;
 
                     if let Some((frag_end, _)) = char_iter.next() {
                         last_passing_breakpoint =
