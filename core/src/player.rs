@@ -1748,7 +1748,7 @@ impl Player {
         gc_context: gc_arena::MutationContext<'gc, '_>,
         renderer: &mut dyn RenderBackend,
     ) -> Font<'gc> {
-        const DEVICE_FONT_TAG: &[u8] = include_bytes!("../assets/noto-sans-definefont3.bin");
+        const DEVICE_FONT_TAG: &[u8] = include_bytes!("../assets/noto_sans_cjk_jis1_plus.bin");
         let mut reader = swf::read::Reader::new(DEVICE_FONT_TAG, 8);
         Font::from_swf_tag(
             gc_context,
