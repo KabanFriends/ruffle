@@ -868,11 +868,13 @@ impl<'gc> Loader<'gc> {
                 );
 
                 let datastr =
-                if activation.context.system.use_codepage {
-                    SwfStr::encoding_for_version(1).decode(&response.body).0
-                } else {
-                    SwfStr::encoding_for_version(activation.swf_version()).decode(&response.body).0
-                };
+                SwfStr::encoding_for_version(
+                    if activation.context.system.use_codepage {
+                        1
+                    } else {
+                        activation.swf_version()
+                    })
+                    .decode(&response.body).0;
 
                 for (k, v) in form_urlencoded::parse(&datastr.as_bytes()) {
                     let k = AvmString::new_utf8(activation.context.gc_context, k);
@@ -959,11 +961,13 @@ impl<'gc> Loader<'gc> {
                         } else {
                             AvmString::new_utf8(
                                 activation.context.gc_context,
+                                SwfStr::encoding_for_version(
                                 if activation.context.system.use_codepage {
-                                    SwfStr::encoding_for_version(1).decode(&response.body).0
+                                    1
                                 } else {
-                                    SwfStr::encoding_for_version(activation.swf_version()).decode(&response.body).0
-                                },
+                                    activation.swf_version()
+                                })
+                                .decode(&response.body).0,
                             )
                             .into()
                         };
