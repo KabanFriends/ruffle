@@ -11,6 +11,7 @@ use crate::avm_warn;
 use crate::backend::navigator::{NavigationMethod, Request};
 use crate::string::AvmString;
 use gc_arena::MutationContext;
+use swf::SwfStr;
 
 const PROTO_DECLS: &[Declaration] = declare_properties! {
     "load" => method(load; DONT_ENUM | DONT_DELETE);
@@ -231,8 +232,6 @@ fn to_string<'gc>(
     for k in keys {
         let v = this.get(k, activation);
 
-        // TODO:UTF-8以外ではエンコード出来ないのかを調べる
-        // 場合によってはURLエンコードに別の手段を用いる必要がある
         //TODO: What happens if an error occurs inside a virtual property?
         form_values.insert(
             k.to_string(),
@@ -246,6 +245,17 @@ fn to_string<'gc>(
 
     let query_string = url::form_urlencoded::Serializer::new(String::new())
         .extend_pairs(form_values.iter())
+        .encoding_override(
+            Some(&|input| {
+                SwfStr::encoding_for_version(
+                    if activation.context.system.use_codepage {
+                        1
+                    } else {
+                        activation.swf_version()
+                    })
+                    .encode(input).0
+            })
+        )
         .finish();
 
     Ok(AvmString::new_utf8(activation.context.gc_context, query_string).into())
