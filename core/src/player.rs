@@ -72,7 +72,7 @@ use web_time::Instant;
 pub const NEWEST_PLAYER_VERSION: u8 = 32;
 
 #[cfg(feature = "default_font")]
-pub const FALLBACK_DEVICE_FONT_TAG: &[u8] = include_bytes!("../assets/noto-sans-definefont3.bin");
+pub const FALLBACK_DEVICE_FONT_TAG: &[u8] = include_bytes!("../assets/noto_sans_cjk_jis1_plus.bin");
 
 #[derive(Collect)]
 #[collect(no_drop)]
