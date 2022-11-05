@@ -30,6 +30,7 @@ noto-sans-definefont3.binの作成には、とりぽっぽ🚂💨さん(twitter
      - ~~AVM1において指定されていない引数の扱いが不正(日本語とは関係なし)~~ →本家で対応いただいたのでそちらをマージして削除  
      - useCodepageの実装(WIP)
      - WINDOWS_1252文字コードをSHIFT_JISに変更
+     - 改行位置を日本語に合わせて修正
 
 Commit Logの整理のため、以前のブランチを feature/japanese_support_old に移動しました。
 
