@@ -11,7 +11,6 @@ use crate::avm1_stub;
 use crate::backend::navigator::{NavigationMethod, Request};
 use crate::context::GcContext;
 use crate::string::AvmString;
-use gc_arena::MutationContext;
 use swf::SwfStr;
 
 const PROTO_DECLS: &[Declaration] = declare_properties! {
